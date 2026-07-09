@@ -40,7 +40,6 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist coverage",
-    "prepack": "pnpm run build",
     "packet:audit": "node scripts/run-packet-audit.mjs",
     "packet:prompt-audit": "node scripts/run-packet-prompt-audit.mjs"
   },
