@@ -2,8 +2,16 @@
   "name": "artifact-graph",
   "version": "0.1.4",
   "description": "Git-native Markdown artifact graph scanner and validator",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "type": "module",
+  "packageManager": "pnpm@10.17.1",
+  "keywords": [
+    "artifact-graph",
+    "traceability",
+    "markdown",
+    "agent-tools",
+    "codex"
+  ],
   "bin": {
     "artifact-graph": "./dist/cli.js"
   },
@@ -30,7 +38,6 @@
     "test": "vitest run --config vitest.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src/",
     "clean": "rm -rf dist coverage",
     "prepack": "pnpm run build",
     "packet:audit": "node scripts/run-packet-audit.mjs",
@@ -51,8 +58,21 @@
     "vitest": "^3.1.0"
   },
   "files": [
+    "README.md",
+    "README.zh-CN.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "NOTICE",
     "dist",
     "scripts",
     "templates"
-  ]
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mzdbxqh/artifact-graph.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mzdbxqh/artifact-graph/issues"
+  },
+  "homepage": "https://github.com/mzdbxqh/artifact-graph#readme"
 }

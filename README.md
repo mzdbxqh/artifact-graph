@@ -1,9 +1,12 @@
 # artifact-graph
 
-Git-native Markdown artifact graph scanner and validator.
+[中文](README.zh-CN.md)
 
-`artifact-graph` scans project artifacts, source traceability comments, version-lock metadata, and
-related test evidence so agentic coding workflows can load and verify the right context.
+Git-native Markdown artifact graph scanner and validator for agentic coding workflows.
+
+`artifact-graph` helps projects keep requirements, scenarios, design notes, source files, tests,
+and version-lock metadata connected. It is designed for deterministic local use before an AI coding
+agent claims implementation work is complete.
 
 ## Install
 
@@ -11,7 +14,9 @@ related test evidence so agentic coding workflows can load and verify the right 
 pnpm add -D artifact-graph
 ```
 
-## Common Commands
+Node.js `>=22.0.0` is required.
+
+## Quick Start
 
 ```bash
 artifact-graph init --root .
@@ -20,14 +25,19 @@ artifact-graph version-lock refresh --changed-only --staged --format markdown
 artifact-graph version-lock audit --root . --strict-missing-lock
 ```
 
-## Git Hooks
+## Common Workflows
 
-After a project has a working `artifact-graph.config.yaml`, install opt-in Git hooks:
+- Generate or inspect project artifact graph configuration with `artifact-graph init`.
+- Validate artifact links with `artifact-graph validate`.
+- Build implementation context with `artifact-graph context` or `artifact-graph packet`.
+- Keep traceability freshness with `artifact-graph version-lock refresh` and `audit`.
+- Install opt-in Git hooks with `artifact-graph hooks install-git --hook all`.
 
-```bash
-artifact-graph hooks install-git --hook all
-```
+## Related Project
+
+Use [`artifact-chain-assistant`](https://github.com/mzdbxqh/artifact-chain-assistant) for Codex and
+Claude Code skills that guide artifact-chain intake, setup, and maintenance.
 
 ## License
 
-MIT
+Apache-2.0. See [LICENSE](LICENSE).
