@@ -1,0 +1,58 @@
+{
+  "name": "artifact-graph",
+  "version": "0.1.4",
+  "description": "Git-native Markdown artifact graph scanner and validator",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "artifact-graph": "./dist/cli.js"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "tsup src/index.ts --format esm,cjs --dts --splitting false && tsup src/cli.ts --format esm --dts --splitting false",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "clean": "rm -rf dist coverage",
+    "prepack": "pnpm run build",
+    "packet:audit": "node scripts/run-packet-audit.mjs",
+    "packet:prompt-audit": "node scripts/run-packet-prompt-audit.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.9.0",
+    "commander": "^13.1.0",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.19.20",
+    "tsup": "^8.4.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.1.0"
+  },
+  "files": [
+    "dist",
+    "scripts",
+    "templates"
+  ]
+}

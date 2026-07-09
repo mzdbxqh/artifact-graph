@@ -1,0 +1,951 @@
+#!/usr/bin/env node
+import yaml from 'js-yaml';
+import { realpathSync } from 'node:fs';
+import { access, readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import {
+  assemblePacket,
+  DEFAULT_SCHEMA,
+  formatContextMarkdown,
+  loadConfig,
+  nextId,
+  queryGraph,
+  renderMermaid,
+  renderPacketMarkdown,
+  resolveArtifactContext,
+  scanArtifacts,
+  validateExecutableTraceability,
+  validateGraph,
+  writeGraphCache,
+} from './index.js';
+import { auditPackets, discoverAndAuditPackets, parseTargetsFile } from './packet-audit.js';
+import { validatePacket, validatePacketMarkdown } from './packet-validator.js';
+import { renderPacketPrompt, DEFAULT_MAX_CHARS, MIN_PROMPT_CHARS } from './packet-prompt.js';
+import { validatePacketPrompt } from './packet-prompt-validator.js';
+import { auditPromptBatch, discoverAndAuditPromptBatch } from './packet-prompt-audit.js';
+import { doctorArtifactChain, renderDoctorMarkdown } from './cli-resolver.js';
+import { collectChangedPaths } from './git-changes.js';
+import { installManagedHookBlock } from './hook-installer.js';
+import {
+  VERSION_LOCK_PATH,
+  auditVersionLock,
+  bootstrapVersionLock,
+  buildVersionIndex,
+  refreshVersionLock,
+  renderTraceVersionMarkdown,
+  renderVersionLockAuditMarkdown,
+  renderVersionLockRefreshMarkdown,
+  traceVersion,
+  updateVersionLock,
+} from './versioned-traceability.js';
+import type { PacketPromptError } from './packet-prompt.js';
+import type { ImplementationPacket } from './packet-assembler.js';
+
+export interface CliIo {
+  cwd?: string;
+  stdout?: (chunk: string) => void;
+  stderr?: (chunk: string) => void;
+}
+
+interface ParsedArgs {
+  command?: string;
+  positional: string[];
+  flags: Record<string, string | boolean>;
+}
+
+export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
+  const parsed = parseArgs(argv);
+  const cwd = io.cwd ?? process.cwd();
+  const out = io.stdout ?? ((chunk: string) => process.stdout.write(chunk));
+  const err = io.stderr ?? ((chunk: string) => process.stderr.write(chunk));
+  const root = String(parsed.flags.root ?? cwd);
+
+  try {
+    switch (parsed.command) {
+      case 'init': {
+        await initConfig(root);
+        out(`Created ${join(root, 'artifact-graph.config.yaml')}\n`);
+        return 0;
+      }
+      case 'scan': {
+        const graph = await scanArtifacts(root);
+        await writeGraphCache(root, graph);
+        out(`Scanned ${graph.nodes.length} artifacts and ${graph.edges.length} relations\n`);
+        return 0;
+      }
+      case 'validate': {
+        const config = await loadConfig(root);
+        const graph = await scanArtifacts(root, config);
+        const issues = validateGraph(graph, config);
+        issues.push(...await validateExecutableTraceability(root));
+        if (parsed.flags.format === 'json') {
+          out(`${JSON.stringify(issues, null, 2)}\n`);
+        } else if (issues.length === 0) {
+          out('No validation issues\n');
+        } else {
+          out(issues.map((issue) => `${issue.code} ${issue.path}:${issue.line} ${issue.message}`).join('\n') + '\n');
+        }
+        return issues.some((issue) => issue.severity === 'error') && !parsed.flags['warning-only'] ? 1 : 0;
+      }
+      case 'query': {
+        const graph = await scanArtifacts(root);
+        const result = queryGraph(graph, {
+          from: typeof parsed.flags.from === 'string' ? parsed.flags.from : undefined,
+          to: typeof parsed.flags.to === 'string' ? parsed.flags.to : undefined,
+          depth: typeof parsed.flags.depth === 'string' ? Number(parsed.flags.depth) : undefined,
+        });
+        if (parsed.flags.format === 'json') {
+          out(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          out(result.nodes.map((node) => `${node.uid} ${node.path}:${node.line}`).join('\n') + '\n');
+        }
+        return 0;
+      }
+      case 'render': {
+        const graph = await scanArtifacts(root);
+        const view = typeof parsed.flags.from === 'string' || typeof parsed.flags.to === 'string'
+          ? queryGraph(graph, {
+              from: typeof parsed.flags.from === 'string' ? parsed.flags.from : undefined,
+              to: typeof parsed.flags.to === 'string' ? parsed.flags.to : undefined,
+            })
+          : graph;
+        if (parsed.flags.format && parsed.flags.format !== 'mermaid') {
+          throw new Error(`Unsupported render format ${String(parsed.flags.format)}`);
+        }
+        out(renderMermaid(view));
+        return 0;
+      }
+      case 'next-id': {
+        const type = parsed.positional[0];
+        const range = parsed.flags.range;
+        if (!type || typeof range !== 'string') {
+          throw new Error('Usage: artifact-graph next-id <type> --range <name>');
+        }
+        const config = await loadConfig(root);
+        const graph = await scanArtifacts(root, config);
+        out(`${nextId(graph, config, type, range)}\n`);
+        return 0;
+      }
+      case 'context': {
+        const contextTargets = [
+          typeof parsed.flags.feature === 'string' ? 'feature' : null,
+          typeof parsed.flags.scenario === 'string' ? 'scenario' : null,
+          typeof parsed.flags.decision === 'string' ? 'decision' : null,
+          typeof parsed.flags.design === 'string' ? 'design' : null,
+          typeof parsed.flags['e2e-test'] === 'string' ? 'e2e_test' : null,
+        ].filter(Boolean);
+        if (contextTargets.length !== 1) {
+          err('Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
+          return 1;
+        }
+        const contextMode = typeof parsed.flags.mode === 'string' ? parsed.flags.mode as 'full' | 'implementation' : 'implementation';
+        if (contextMode !== 'implementation' && contextMode !== 'full') {
+          err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full\n`);
+          err('Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
+          return 1;
+        }
+        const maxPerCategory = typeof parsed.flags['max-per-category'] === 'string' ? Number(parsed.flags['max-per-category']) : undefined;
+        if (typeof parsed.flags['max-per-category'] === 'string') {
+          const raw = parsed.flags['max-per-category'];
+          const num = Number(raw);
+          if (!Number.isFinite(num) || num < 1 || !Number.isInteger(num)) {
+            err(`Invalid --max-per-category: "${raw}". Must be a positive integer\n`);
+            err('Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
+            return 1;
+          }
+        }
+        const graph = await scanArtifacts(root);
+        const manifest = resolveArtifactContext(graph, {
+          feature: typeof parsed.flags.feature === 'string' ? parsed.flags.feature : undefined,
+          scenario: typeof parsed.flags.scenario === 'string' ? parsed.flags.scenario : undefined,
+          decision: typeof parsed.flags.decision === 'string' ? parsed.flags.decision : undefined,
+          design: typeof parsed.flags.design === 'string' ? parsed.flags.design : undefined,
+          e2e_test: typeof parsed.flags['e2e-test'] === 'string' ? parsed.flags['e2e-test'] : undefined,
+          mode: contextMode,
+          maxPerCategory,
+        });
+        if (parsed.flags.format === 'json') {
+          out(`${JSON.stringify(manifest, null, 2)}\n`);
+        } else {
+          out(formatContextMarkdown(manifest));
+        }
+        return manifest.missing.length > 0 ? 1 : 0;
+      }
+      case 'packet': {
+        const packetTargets = [
+          typeof parsed.flags.feature === 'string' ? 'feature' : null,
+          typeof parsed.flags.scenario === 'string' ? 'scenario' : null,
+          typeof parsed.flags.decision === 'string' ? 'decision' : null,
+          typeof parsed.flags.design === 'string' ? 'design' : null,
+          typeof parsed.flags['e2e-test'] === 'string' ? 'e2e_test' : null,
+        ].filter(Boolean);
+        if (packetTargets.length !== 1) {
+          err('Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n');
+          return 1;
+        }
+        const packetMode = typeof parsed.flags.mode === 'string' ? parsed.flags.mode as 'full' | 'implementation' : 'implementation';
+        if (packetMode !== 'implementation' && packetMode !== 'full') {
+          err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full\n`);
+          err('Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n');
+          return 1;
+        }
+        const packetMaxPerCategory = typeof parsed.flags['max-per-category'] === 'string' ? Number(parsed.flags['max-per-category']) : undefined;
+        if (typeof parsed.flags['max-per-category'] === 'string') {
+          const raw2 = parsed.flags['max-per-category'];
+          const num2 = Number(raw2);
+          if (!Number.isFinite(num2) || num2 < 1 || !Number.isInteger(num2)) {
+            err(`Invalid --max-per-category: "${raw2}". Must be a positive integer\n`);
+            err('Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n');
+            return 1;
+          }
+        }
+        const graph = await scanArtifacts(root);
+        const manifest = resolveArtifactContext(graph, {
+          feature: typeof parsed.flags.feature === 'string' ? parsed.flags.feature : undefined,
+          scenario: typeof parsed.flags.scenario === 'string' ? parsed.flags.scenario : undefined,
+          decision: typeof parsed.flags.decision === 'string' ? parsed.flags.decision : undefined,
+          design: typeof parsed.flags.design === 'string' ? parsed.flags.design : undefined,
+          e2e_test: typeof parsed.flags['e2e-test'] === 'string' ? parsed.flags['e2e-test'] : undefined,
+          mode: packetMode,
+          maxPerCategory: packetMaxPerCategory,
+        });
+        if (manifest.missing.length > 0) {
+          err('Missing artifacts detected — cannot generate packet:\n');
+          for (const m of manifest.missing) {
+            err(`  - ${m}\n`);
+          }
+          err('\nFix the traceability gaps above before generating an implementation packet.\n');
+          if (typeof parsed.flags.out === 'string') {
+            // Write error report to out path so automation can inspect it
+            const errorReport = JSON.stringify({ error: 'missing', missing: manifest.missing }, null, 2);
+            await writeFile(parsed.flags.out, errorReport + '\n');
+          }
+          return 1;
+        }
+        const packet = assemblePacket(manifest, {
+          mode: packetMode,
+          maxPerCategory: packetMaxPerCategory,
+        });
+
+        // Validate packet unless --no-validate is set
+        const skipValidate = parsed.flags['no-validate'] === true;
+        if (!skipValidate) {
+          const vResult = validatePacket(packet);
+          if (vResult.issues.length > 0) {
+            for (const issue of vResult.issues) {
+              err(`[${issue.severity.toUpperCase()}] ${issue.code}: ${issue.message}\n`);
+            }
+          }
+          if (!vResult.ok) {
+            err('Packet validation failed. Use --no-validate to skip.\n');
+            return 1;
+          }
+        }
+
+        const packetFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'markdown';
+        let output: string;
+        if (packetFormat === 'json') {
+          output = JSON.stringify(packet, null, 2) + '\n';
+        } else if (packetFormat === 'markdown') {
+          output = renderPacketMarkdown(packet);
+        } else {
+          err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+          return 1;
+        }
+        if (typeof parsed.flags.out === 'string') {
+          await writeFile(parsed.flags.out, output);
+          out(`Packet written to ${parsed.flags.out}\n`);
+        } else {
+          out(output);
+        }
+        return 0;
+      }
+      case 'packet-prompt': {
+        // --format validation (Phase 3): only 'markdown' is allowed
+        const promptFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : undefined;
+        if (promptFormat && promptFormat !== 'markdown') {
+          err(`不支持的 --format: "${promptFormat}". packet-prompt 仅支持 --format markdown\n`);
+          return 1;
+        }
+
+        // --packet JSON input (Phase 2)
+        const packetJsonPath = typeof parsed.flags.packet === 'string' ? parsed.flags.packet : undefined;
+
+        const promptTargets = [
+          typeof parsed.flags.feature === 'string' ? 'feature' : null,
+          typeof parsed.flags.scenario === 'string' ? 'scenario' : null,
+          typeof parsed.flags.decision === 'string' ? 'decision' : null,
+          typeof parsed.flags.design === 'string' ? 'design' : null,
+          typeof parsed.flags['e2e-test'] === 'string' ? 'e2e_test' : null,
+        ].filter(Boolean);
+
+        // --packet is mutually exclusive with --feature/--scenario/--decision
+        if (packetJsonPath && promptTargets.length > 0) {
+          err('错误：--packet 与 --feature/--scenario/--decision/--design/--e2e-test 互斥，只能指定一种输入方式\n');
+          return 1;
+        }
+
+        // Must have either --packet or exactly one target
+        if (!packetJsonPath && promptTargets.length !== 1) {
+          err('Usage: artifact-graph packet-prompt (--feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]\n');
+          return 1;
+        }
+
+        const maxChars = typeof parsed.flags['max-chars'] === 'string' ? Number(parsed.flags['max-chars']) : DEFAULT_MAX_CHARS;
+        if (typeof parsed.flags['max-chars'] === 'string') {
+          const rawMc = parsed.flags['max-chars'];
+          const numMc = Number(rawMc);
+          if (!Number.isFinite(numMc) || numMc < MIN_PROMPT_CHARS || !Number.isInteger(numMc)) {
+            err(`Invalid --max-chars: "${rawMc}". Must be an integer >= ${MIN_PROMPT_CHARS}\n`);
+            return 1;
+          }
+        }
+
+        let promptPacket: ImplementationPacket;
+
+        if (packetJsonPath) {
+          // Read and validate packet JSON
+          let rawJson: string;
+          try {
+            rawJson = await readFile(packetJsonPath, 'utf-8');
+          } catch (readErr) {
+            err(`错误：无法读取 packet 文件: "${packetJsonPath}" — ${(readErr as Error).message}\n`);
+            return 1;
+          }
+          let parsedPacket: unknown;
+          try {
+            parsedPacket = JSON.parse(rawJson);
+          } catch {
+            err(`错误：packet 文件不是有效的 JSON: "${packetJsonPath}"\n`);
+            return 1;
+          }
+          // Validate ImplementationPacket schema
+          const pp = parsedPacket as Record<string, unknown>;
+          const missingFields: string[] = [];
+          if (pp.schemaVersion !== '1.0') missingFields.push('schemaVersion (需要 "1.0")');
+          if (!pp.target || typeof pp.target !== 'object') missingFields.push('target');
+          if (!pp.requiredBaseline || typeof pp.requiredBaseline !== 'object') missingFields.push('requiredBaseline');
+          if (!pp.contextByTier || typeof pp.contextByTier !== 'object') missingFields.push('contextByTier');
+          if (!Array.isArray(pp.validationCommands)) missingFields.push('validationCommands');
+          if (!pp.implementationBlueprintDraft || typeof pp.implementationBlueprintDraft !== 'object') missingFields.push('implementationBlueprintDraft');
+          if (missingFields.length > 0) {
+            err(`错误：packet JSON 缺失或无效字段:\n`);
+            for (const f of missingFields) {
+              err(`  - ${f}\n`);
+            }
+            return 1;
+          }
+          promptPacket = parsedPacket as ImplementationPacket;
+        } else {
+          // Scan artifacts for target
+          const graph = await scanArtifacts(root);
+          const promptManifest = resolveArtifactContext(graph, {
+            feature: typeof parsed.flags.feature === 'string' ? parsed.flags.feature : undefined,
+            scenario: typeof parsed.flags.scenario === 'string' ? parsed.flags.scenario : undefined,
+            decision: typeof parsed.flags.decision === 'string' ? parsed.flags.decision : undefined,
+            design: typeof parsed.flags.design === 'string' ? parsed.flags.design : undefined,
+            e2e_test: typeof parsed.flags['e2e-test'] === 'string' ? parsed.flags['e2e-test'] : undefined,
+            mode: 'implementation',
+          });
+          if (promptManifest.missing.length > 0) {
+            err('Missing artifacts detected — cannot generate prompt:\n');
+            for (const m of promptManifest.missing) {
+              err(`  - ${m}\n`);
+            }
+            return 1;
+          }
+          promptPacket = assemblePacket(promptManifest, {
+            mode: 'implementation',
+            generatedAt: typeof parsed.flags['generated-at'] === 'string' ? parsed.flags['generated-at'] : undefined,
+          });
+        }
+
+        const promptResult = renderPacketPrompt(promptPacket, {
+          maxChars,
+          generatedAt: typeof parsed.flags['generated-at'] === 'string' ? parsed.flags['generated-at'] : undefined,
+          root,
+        });
+        // Handle structured error from renderPacketPrompt
+        if (typeof promptResult === 'object' && 'ok' in promptResult && !promptResult.ok) {
+          const e = promptResult as PacketPromptError;
+          err(`错误：${e.reason}。实际长度 ${e.actualLength}，最小需要 ${e.minRequired} 字符。\n`);
+          return 1;
+        }
+        const prompt = promptResult as string;
+        const promptValidation = validatePacketPrompt(prompt);
+        const promptErrors = promptValidation.issues.filter((issue) => issue.severity === 'error');
+        if (promptErrors.length > 0) {
+          err('错误：生成的 packet-prompt 未通过质量校验：\n');
+          for (const issue of promptErrors) {
+            err(`  - ${issue.code}: ${issue.message}\n`);
+          }
+          return 1;
+        }
+        const promptWarnings = promptValidation.issues.filter((issue) => issue.severity === 'warning');
+        for (const issue of promptWarnings) {
+          err(`警告：${issue.code}: ${issue.message}\n`);
+        }
+        if (typeof parsed.flags.out === 'string') {
+          await writeFile(parsed.flags.out, prompt);
+          out(`Prompt written to ${parsed.flags.out}\n`);
+        } else {
+          out(prompt);
+        }
+        return 0;
+      }
+      case 'packet-audit': {
+        const targetsFile = typeof parsed.flags['targets-file'] === 'string' ? parsed.flags['targets-file'] : undefined;
+        const discover = parsed.flags.discover === true;
+        if (targetsFile && discover) {
+          err('Error: --discover and --targets-file are mutually exclusive\n');
+          return 1;
+        }
+        if (!targetsFile && !discover) {
+          err('Usage: artifact-graph packet-audit (--targets-file <path> | --discover) [--out-dir <path>] [--limit <n>] [--format json|markdown] [--mode full|implementation] [--max-per-category <n>] [--summary-only] [--sample-targets <csv>] [--summary-detail full|compact]\n');
+          return 1;
+        }
+        const summaryOnly = parsed.flags['summary-only'] === true;
+        const sampleTargetsRaw = typeof parsed.flags['sample-targets'] === 'string' ? parsed.flags['sample-targets'] : undefined;
+        if (summaryOnly && sampleTargetsRaw) {
+          err('Error: --summary-only and --sample-targets are mutually exclusive\n');
+          return 1;
+        }
+        let sampleTargets: string[] | undefined;
+        if (sampleTargetsRaw) {
+          sampleTargets = sampleTargetsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+          for (const st of sampleTargets) {
+            const colonIdx = st.indexOf(':');
+            if (colonIdx < 0) {
+              err(`Invalid --sample-targets entry: "${st}". Expected format "type:id"\n`);
+              return 1;
+            }
+            const stType = st.slice(0, colonIdx).trim();
+            if (!['feature', 'scenario', 'decision', 'design', 'e2e_test'].includes(stType)) {
+              err(`Invalid --sample-targets entry: "${st}". Type must be feature, scenario, decision, design, or e2e_test\n`);
+              return 1;
+            }
+            const stId = st.slice(colonIdx + 1).trim();
+            if (!stId) {
+              err(`Invalid --sample-targets entry: "${st}". ID is empty\n`);
+              return 1;
+            }
+          }
+        }
+        const auditOutDir = typeof parsed.flags['out-dir'] === 'string' ? parsed.flags['out-dir'] : undefined;
+        if (!auditOutDir && !summaryOnly) {
+          err('Usage: artifact-graph packet-audit (--targets-file <path> | --discover) [--out-dir <path>] [--limit <n>] [--format json|markdown] [--mode full|implementation] [--max-per-category <n>] [--summary-only] [--sample-targets <csv>] [--summary-detail full|compact]\n');
+          err('  --out-dir is required unless --summary-only is set\n');
+          return 1;
+        }
+        const auditFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format as 'json' | 'markdown' : 'markdown';
+        if (auditFormat !== 'json' && auditFormat !== 'markdown') {
+          err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+          return 1;
+        }
+        const auditMode = typeof parsed.flags.mode === 'string' ? parsed.flags.mode as 'full' | 'implementation' : 'implementation';
+        if (auditMode !== 'implementation' && auditMode !== 'full') {
+          err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full\n`);
+          return 1;
+        }
+        const auditMaxPerCategory = typeof parsed.flags['max-per-category'] === 'string' ? Number(parsed.flags['max-per-category']) : undefined;
+        if (typeof parsed.flags['max-per-category'] === 'string') {
+          const raw3 = parsed.flags['max-per-category'];
+          const num3 = Number(raw3);
+          if (!Number.isFinite(num3) || num3 < 1 || !Number.isInteger(num3)) {
+            err(`Invalid --max-per-category: "${raw3}". Must be a positive integer\n`);
+            return 1;
+          }
+        }
+        const limit = typeof parsed.flags.limit === 'string' ? Number(parsed.flags.limit) : undefined;
+        if (typeof parsed.flags.limit === 'string') {
+          const rawLimit = parsed.flags.limit;
+          const numLimit = Number(rawLimit);
+          // limit=0 means "no limit" (discover all)
+          if (!Number.isFinite(numLimit) || numLimit < 0 || !Number.isInteger(numLimit)) {
+            err(`Invalid --limit: "${rawLimit}". Must be a non-negative integer (0 = no limit)\n`);
+            return 1;
+          }
+        }
+        const summaryDetail = typeof parsed.flags['summary-detail'] === 'string' ? parsed.flags['summary-detail'] as 'full' | 'compact' : undefined;
+        if (summaryDetail && summaryDetail !== 'full' && summaryDetail !== 'compact') {
+          err(`Invalid --summary-detail: "${parsed.flags['summary-detail']}". Allowed values: full, compact\n`);
+          return 1;
+        }
+
+        let summary;
+        if (discover) {
+          summary = await discoverAndAuditPackets(root, {
+            root,
+            outDir: auditOutDir,
+            format: auditFormat,
+            mode: auditMode,
+            maxPerCategory: auditMaxPerCategory,
+            limit: limit === 0 ? Infinity : limit,
+            summaryOnly,
+            sampleTargets,
+            summaryDetail,
+          });
+        } else {
+          const targetsContent = await readFile(targetsFile!, 'utf-8');
+          const parseResult = parseTargetsFile(targetsContent);
+          if (parseResult.errors.length > 0) {
+            for (const e of parseResult.errors) {
+              err(`Parse error (line ${e.line}): ${e.message} — ${e.raw}\n`);
+            }
+            return 1;
+          }
+          if (parseResult.targets.length === 0) {
+            err(`No valid targets found in ${targetsFile}\n`);
+            return 1;
+          }
+          summary = await auditPackets(root, parseResult.targets, {
+            root,
+            outDir: auditOutDir,
+            format: auditFormat,
+            mode: auditMode,
+            maxPerCategory: auditMaxPerCategory,
+            sourceTargetsPath: targetsFile,
+            summaryOnly,
+            sampleTargets,
+            summaryDetail,
+          });
+        }
+        if (parsed.flags.format === 'json') {
+          out(`${JSON.stringify(summary, null, 2)}\n`);
+        } else {
+          out(`Packet Audit Summary\n`);
+          out(`Total: ${summary.total} | Passed: ${summary.passed} | Failed: ${summary.failed} | Missing: ${summary.missing}\n`);
+          for (const t of summary.targets) {
+            const statusIcon = t.status === 'passed' ? 'PASS' : t.status === 'failed' ? 'FAIL' : 'MISS';
+            out(`  [${statusIcon}] ${t.type}:${t.id} items=${t.itemsCount} baseline=${t.baselineCount} missing=${t.missingCount} omitted=${t.omittedCount}`);
+            if (t.outputPath) out(` -> ${t.outputPath}`);
+            out('\n');
+            for (const err2 of t.errors) {
+              out(`        ${err2}\n`);
+            }
+          }
+        }
+        // discover 模式 total=0 说明 root 缺少 artifact 配置或制品，视为失败
+        if (discover && summary.total === 0) {
+          err(`Error: discover mode found 0 targets in ${root}. Is this a valid artifact root?\n`);
+          return 1;
+        }
+        return summary.failed > 0 ? 1 : 0;
+      }
+      case 'packet-prompt-audit': {
+        const ppaTargetsFile = typeof parsed.flags['targets-file'] === 'string' ? parsed.flags['targets-file'] : undefined;
+        const ppaDiscover = parsed.flags.discover === true;
+        if (ppaTargetsFile && ppaDiscover) {
+          err('错误：--discover 与 --targets-file 互斥，只能选择一种方式\n');
+          return 1;
+        }
+        if (!ppaTargetsFile && !ppaDiscover) {
+          err('Usage: artifact-graph packet-prompt-audit (--targets-file <path> | --discover) [--out-dir <path>] [--format json|markdown] [--max-chars <n>] [--limit <n>] [--summary-only] [--summary-detail full|compact]\n');
+          return 1;
+        }
+        // Reject --packet flag (audit only accepts targets-file or discover)
+        if (parsed.flags.packet) {
+          err('错误：packet-prompt-audit 不支持 --packet，仅接受 --targets-file 或 --discover\n');
+          return 1;
+        }
+        const ppaFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format as 'json' | 'markdown' : 'json';
+        if (ppaFormat !== 'json' && ppaFormat !== 'markdown') {
+          err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+          return 1;
+        }
+        const ppaMaxChars = typeof parsed.flags['max-chars'] === 'string' ? Number(parsed.flags['max-chars']) : DEFAULT_MAX_CHARS;
+        if (typeof parsed.flags['max-chars'] === 'string') {
+          const rawPpa = parsed.flags['max-chars'];
+          const numPpa = Number(rawPpa);
+          if (!Number.isFinite(numPpa) || numPpa < MIN_PROMPT_CHARS || !Number.isInteger(numPpa)) {
+            err(`Invalid --max-chars: "${rawPpa}". Must be an integer >= ${MIN_PROMPT_CHARS}\n`);
+            return 1;
+          }
+        }
+        const ppaOutDir = typeof parsed.flags['out-dir'] === 'string' ? parsed.flags['out-dir'] : undefined;
+        const ppaSummaryOnly = parsed.flags['summary-only'] === true;
+        const ppaSummaryDetail = typeof parsed.flags['summary-detail'] === 'string' ? parsed.flags['summary-detail'] as 'full' | 'compact' : undefined;
+        if (ppaSummaryDetail && ppaSummaryDetail !== 'full' && ppaSummaryDetail !== 'compact') {
+          err(`Invalid --summary-detail: "${parsed.flags['summary-detail']}". Allowed values: full, compact\n`);
+          return 1;
+        }
+        // --limit for discover mode
+        const ppaLimit = typeof parsed.flags.limit === 'string' ? Number(parsed.flags.limit) : undefined;
+        if (typeof parsed.flags.limit === 'string') {
+          const rawPpaLimit = parsed.flags.limit;
+          const numPpaLimit = Number(rawPpaLimit);
+          if (!Number.isFinite(numPpaLimit) || numPpaLimit < 0 || !Number.isInteger(numPpaLimit)) {
+            err(`Invalid --limit: "${rawPpaLimit}". Must be a non-negative integer (0 = no limit)\n`);
+            return 1;
+          }
+        }
+
+        let ppaSummary;
+        if (ppaDiscover) {
+          // Discover mode: scan artifacts, discover targets, audit prompts
+          ppaSummary = await discoverAndAuditPromptBatch(root, {
+            root,
+            outDir: ppaOutDir,
+            format: ppaFormat,
+            maxChars: ppaMaxChars,
+            limit: ppaLimit === 0 ? Infinity : ppaLimit,
+            summaryOnly: ppaSummaryOnly,
+            summaryDetail: ppaSummaryDetail,
+          });
+          // discover 模式 total=0 说明 root 缺少 artifact 配置或制品，视为失败
+          if (ppaSummary.total === 0) {
+            err(`错误：discover 模式在 ${root} 中未找到任何 target。请确认这是一个有效的 artifact root。\n`);
+            return 1;
+          }
+        } else {
+          // Targets-file mode
+          // Read and parse targets file
+          let ppaTargetsContent: string;
+          try {
+            ppaTargetsContent = await readFile(ppaTargetsFile!, 'utf-8');
+          } catch (readErr) {
+            err(`错误：无法读取 targets 文件: "${ppaTargetsFile}" — ${(readErr as Error).message}\n`);
+            return 1;
+          }
+          if (ppaTargetsContent.trim().length === 0) {
+            err(`错误：targets 文件为空: "${ppaTargetsFile}"\n`);
+            return 1;
+          }
+          const ppaParseResult = parseTargetsFile(ppaTargetsContent);
+          if (ppaParseResult.errors.length > 0) {
+            for (const e of ppaParseResult.errors) {
+              err(`Parse error (line ${e.line}): ${e.message} — ${e.raw}\n`);
+            }
+            return 1;
+          }
+          if (ppaParseResult.targets.length === 0) {
+            err(`No valid targets found in ${ppaTargetsFile}\n`);
+            return 1;
+          }
+
+          ppaSummary = await auditPromptBatch(root, ppaParseResult.targets, {
+            root,
+            outDir: ppaOutDir,
+            format: ppaFormat,
+            maxChars: ppaMaxChars,
+            sourceTargetsPath: ppaTargetsFile,
+            summaryOnly: ppaSummaryOnly,
+            summaryDetail: ppaSummaryDetail,
+          });
+        }
+
+        if (ppaFormat === 'json') {
+          out(`${JSON.stringify(ppaSummary, null, 2)}\n`);
+        } else {
+          out(`Packet Prompt Audit Summary\n`);
+          out(`总计: ${ppaSummary.total} | 通过: ${ppaSummary.passed} | 失败: ${ppaSummary.failed} | 警告: ${ppaSummary.warnings}\n`);
+          if (ppaSummary.totalOmitted !== undefined && ppaSummary.totalOmitted > 0) {
+            out(`（compact 模式：已省略 ${ppaSummary.totalOmitted} 个通过的 target 详情）\n`);
+          }
+          if (ppaSummary.countsByType) {
+            const cbt = ppaSummary.countsByType;
+            const typeEntries = Object.entries(cbt).map(([t, c]) => `${t}=${c.total}/${c.passed}`);
+            out(`按类型: ${typeEntries.join(' ')}\n`);
+          }
+          for (const t of ppaSummary.targets) {
+            const icon = t.ok ? 'PASS' : 'FAIL';
+            out(`  [${icon}] ${t.type}:${t.id} length=${t.length}`);
+            if (t.outputPath) out(` -> ${t.outputPath}`);
+            out('\n');
+            for (const issue of t.issues) {
+              const sev = issue.severity === 'error' ? 'ERROR' : 'WARN';
+              out(`        [${sev}] ${issue.code}: ${issue.message}\n`);
+            }
+          }
+        }
+        return ppaSummary.failed > 0 ? 1 : 0;
+      }
+      case 'version-index': {
+        const format = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'json';
+        if (format !== 'json') {
+          err(`Invalid --format: "${parsed.flags.format}". Allowed values: json\n`);
+          return 1;
+        }
+        const index = await buildVersionIndex(root);
+        const output = `${JSON.stringify(index, null, 2)}\n`;
+        if (typeof parsed.flags.out === 'string') {
+          await writeFile(parsed.flags.out, output);
+          out(`Version index written to ${parsed.flags.out}\n`);
+        } else {
+          out(output);
+        }
+        return 0;
+      }
+      case 'version-lock': {
+        const action = parsed.positional[0];
+        const lockPath = typeof parsed.flags['lock-path'] === 'string' ? parsed.flags['lock-path'] : VERSION_LOCK_PATH;
+        if (action === 'audit') {
+          const versionLockAuditFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'markdown';
+          if (versionLockAuditFormat !== 'json' && versionLockAuditFormat !== 'markdown') {
+            err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+            return 1;
+          }
+          const result = await auditVersionLock(root, lockPath);
+          if (versionLockAuditFormat === 'json') {
+            out(`${JSON.stringify(result, null, 2)}\n`);
+          } else {
+            out(renderVersionLockAuditMarkdown(result));
+          }
+          return hasBlockingVersionIssues(result.issues, parsed.flags['strict-missing-lock'] === true) && !parsed.flags['warning-only'] ? 1 : 0;
+        }
+        if (action === 'update') {
+          const target = typeof parsed.flags.target === 'string' ? parsed.flags.target : undefined;
+          const source = typeof parsed.flags.source === 'string' ? parsed.flags.source : undefined;
+          if (!target || !source) {
+            err('Usage: artifact-graph version-lock update --target <type:id> --source <path> [--verified-by <path,path>] [--lock-path <path>]\n');
+            return 1;
+          }
+          const verifiedBy = typeof parsed.flags['verified-by'] === 'string'
+            ? parsed.flags['verified-by'].split(',').map((item) => item.trim()).filter(Boolean)
+            : undefined;
+          const next = await updateVersionLock(root, {
+            target,
+            source,
+            verifiedBy,
+            lockPath,
+          });
+          out(`Updated ${lockPath} (${next.locks.length} locks)\n`);
+          return 0;
+        }
+        if (action === 'bootstrap') {
+          const next = await bootstrapVersionLock(root, {
+            lockPath,
+            force: parsed.flags.force === true,
+          });
+          out(`Bootstrapped ${lockPath} (${next.locks.length} locks)\n`);
+          return 0;
+        }
+        if (action === 'refresh') {
+          const refreshFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'markdown';
+          if (refreshFormat !== 'json' && refreshFormat !== 'markdown') {
+            err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+            return 1;
+          }
+          const refreshAll = parsed.flags.all === true;
+          const refreshChangedOnly = parsed.flags['changed-only'] === true;
+          if (!refreshAll && !refreshChangedOnly) {
+            err('Usage: artifact-graph version-lock refresh (--all | --changed-only (--staged | --worktree | --base <ref>)) [--remove-orphans] [--format json|markdown] [--lock-path <path>]\n');
+            return 1;
+          }
+          if (refreshAll && refreshChangedOnly) {
+            err('Error: --all and --changed-only are mutually exclusive\n');
+            return 1;
+          }
+
+          let changedPaths: string[] = [];
+          if (refreshChangedOnly) {
+            const changeModeFlags = [
+              parsed.flags.staged === true ? 'staged' : null,
+              parsed.flags.worktree === true ? 'worktree' : null,
+              typeof parsed.flags.base === 'string' ? 'base' : null,
+            ].filter(Boolean);
+            if (changeModeFlags.length !== 1) {
+              err('Usage: artifact-graph version-lock refresh --changed-only (--staged | --worktree | --base <ref>) [--remove-orphans] [--format json|markdown] [--lock-path <path>]\n');
+              return 1;
+            }
+            const changeResult = await collectChangedPaths(root, {
+              mode: changeModeFlags[0] as 'staged' | 'worktree' | 'base',
+              base: typeof parsed.flags.base === 'string' ? parsed.flags.base : undefined,
+            });
+            if (changeResult.stagedUnstagedConflictPaths.length > 0) {
+              err('Cannot refresh staged version locks because these paths have both staged and unstaged changes:\n');
+              for (const conflictPath of changeResult.stagedUnstagedConflictPaths) {
+                err(`  - ${conflictPath}\n`);
+              }
+              err('Stage or stash the unstaged changes before running changed-only staged refresh.\n');
+              return 1;
+            }
+            const unstagedGraphPaths = changeResult.unstagedPaths.filter(isGraphRelevantPath);
+            if (unstagedGraphPaths.length > 0) {
+              err('Cannot refresh staged version locks because graph-relevant unstaged changes may affect working-tree hashes:\n');
+              for (const conflictPath of unstagedGraphPaths) {
+                err(`  - ${conflictPath}\n`);
+              }
+              err('Stage or stash graph-relevant unstaged changes before running changed-only staged refresh.\n');
+              return 1;
+            }
+            changedPaths = changeResult.changedPaths;
+          }
+
+          const result = await refreshVersionLock(root, {
+            lockPath,
+            changedOnly: refreshChangedOnly,
+            changedPaths,
+            all: refreshAll,
+            removeOrphans: parsed.flags['remove-orphans'] === true,
+          });
+          if (refreshFormat === 'json') {
+            out(`${JSON.stringify(result, null, 2)}\n`);
+          } else {
+            out(renderVersionLockRefreshMarkdown(result));
+          }
+          return hasBlockingVersionIssues(result.postAudit.issues, true) && !parsed.flags['warning-only'] ? 1 : 0;
+        }
+        err('Usage: artifact-graph version-lock audit|update|bootstrap|refresh [options]\n');
+        return 1;
+      }
+      case 'trace-version': {
+        const target = typeof parsed.flags.target === 'string' ? parsed.flags.target : parsed.positional[0];
+        if (!target) {
+          err('Usage: artifact-graph trace-version --target <type:id> [--format json|markdown] [--lock-path <path>]\n');
+          return 1;
+        }
+        const lockPath = typeof parsed.flags['lock-path'] === 'string' ? parsed.flags['lock-path'] : VERSION_LOCK_PATH;
+        const traceVersionFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'markdown';
+        if (traceVersionFormat !== 'json' && traceVersionFormat !== 'markdown') {
+          err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+          return 1;
+        }
+        const result = await traceVersion(root, target, lockPath);
+        if (traceVersionFormat === 'json') {
+          out(`${JSON.stringify(result, null, 2)}\n`);
+        } else {
+          out(renderTraceVersionMarkdown(result));
+        }
+        return hasBlockingVersionIssues(result.issues, parsed.flags['strict-missing-lock'] === true) && !parsed.flags['warning-only'] ? 1 : 0;
+      }
+      case 'hooks': {
+        const action = parsed.positional[0];
+        if (action !== 'install-git') {
+          err('Usage: artifact-graph hooks install-git [--hook pre-commit|pre-push|all] [--uninstall]\n');
+          return 1;
+        }
+        const hookFlag = typeof parsed.flags.hook === 'string' ? parsed.flags.hook : 'all';
+        const hooks = hookFlag === 'all' ? ['pre-commit', 'pre-push'] : [hookFlag];
+        for (const hookName of hooks) {
+          if (hookName !== 'pre-commit' && hookName !== 'pre-push') {
+            err(`Unsupported hook: ${hookName}\n`);
+            return 1;
+          }
+          const templatePath = fileURLToPath(new URL(`../templates/git-hooks/${hookName}.sh`, import.meta.url));
+          const block = await readFile(templatePath, 'utf-8');
+          const result = await installManagedHookBlock({
+            hookPath: join(root, `.git/hooks/${hookName}`),
+            block,
+            uninstall: parsed.flags.uninstall === true,
+          });
+          out(`${result.action}: ${result.hookPath}\n`);
+        }
+        return 0;
+      }
+      case 'doctor': {
+        const doctorFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'markdown';
+        if (doctorFormat !== 'json' && doctorFormat !== 'markdown') {
+          err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
+          return 1;
+        }
+        const report = await doctorArtifactChain(root);
+        if (doctorFormat === 'json') {
+          out(`${JSON.stringify(report, null, 2)}\n`);
+        } else {
+          const config = await loadConfig(root);
+          out(renderDoctorMarkdown(report));
+          out(`Types: ${Object.keys(config.types).sort().join(', ')}\n`);
+          out(`Forbidden edges: ${config.forbiddenEdges.length}\n`);
+        }
+        return 0;
+      }
+      default:
+        err(helpText());
+        return 1;
+    }
+  } catch (error) {
+    err(`${(error as Error).message}\n`);
+    return 1;
+  }
+}
+
+function hasBlockingVersionIssues(issues: Array<{ status: string }>, strictMissingLock: boolean): boolean {
+  return issues.some((issue) => issue.status !== 'missing_lock' || strictMissingLock);
+}
+
+function isGraphRelevantPath(path: string): boolean {
+  return path === 'artifact-graph.config.yaml'
+    || path === VERSION_LOCK_PATH
+    || path.startsWith('artifacts/')
+    || /\.(md|mdx|json|ya?ml|ts|tsx|js|jsx|mts|cts|rs|py|go)$/.test(path);
+}
+
+async function initConfig(root: string): Promise<void> {
+  const configPath = join(root, 'artifact-graph.config.yaml');
+  try {
+    await access(configPath);
+    throw new Error(`Config already exists: ${configPath}`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  await writeFile(configPath, yaml.dump(DEFAULT_SCHEMA, { lineWidth: 120 }));
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const [command, ...rest] = argv;
+  const flags: Record<string, string | boolean> = {};
+  const positional: string[] = [];
+  for (let index = 0; index < rest.length; index += 1) {
+    const token = rest[index];
+    if (token.startsWith('--')) {
+      const key = token.slice(2);
+      const next = rest[index + 1];
+      if (next && !next.startsWith('--')) {
+        flags[key] = next;
+        index += 1;
+      } else {
+        flags[key] = true;
+      }
+    } else {
+      positional.push(token);
+    }
+  }
+  return { command, positional, flags };
+}
+
+function helpText(): string {
+  return `artifact-graph <command>
+
+Commands:
+  init
+  scan
+  validate [--format json] [--warning-only]
+  query --from <code> [--format json]
+  context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]
+  packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]
+  packet-prompt (--feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]
+  packet-audit (--targets-file <path> | --discover) [--out-dir <path>] [--limit <n>] [--format json|markdown] [--mode full|implementation] [--max-per-category <n>] [--summary-only] [--sample-targets <type:id,...>] [--summary-detail full|compact]
+  packet-prompt-audit --targets-file <path> [--out-dir <path>] [--format json|markdown] [--max-chars <n>]
+  version-index [--format json] [--out <path>]
+  version-lock audit [--format json|markdown] [--warning-only] [--strict-missing-lock] [--lock-path <path>]
+  version-lock update --target <type:id> --source <path> [--verified-by <path,path>] [--lock-path <path>]
+  version-lock bootstrap [--force] [--lock-path <path>]
+  version-lock refresh (--all | --changed-only (--staged | --worktree | --base <ref>)) [--remove-orphans] [--format json|markdown] [--lock-path <path>]
+  trace-version --target <type:id> [--format json|markdown] [--warning-only] [--strict-missing-lock] [--lock-path <path>]
+  hooks install-git [--hook pre-commit|pre-push|all] [--uninstall]
+  next-id <type> --range <name>
+  render [--format mermaid]
+  doctor [--format json|markdown]
+`;
+}
+
+function isCliEntrypoint(argvPath: string | undefined): boolean {
+  if (!argvPath) {
+    return false;
+  }
+  try {
+    return realpathSync(argvPath) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (isCliEntrypoint(process.argv[1])) {
+  void runCli(process.argv.slice(2)).then((code) => {
+    process.exitCode = code;
+  });
+}
