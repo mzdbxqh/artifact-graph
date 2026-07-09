@@ -36,6 +36,7 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --splitting false && tsup src/cli.ts --format esm --dts --splitting false",
     "test": "vitest run --config vitest.config.ts",
+    "test:ci": "ARTIFACT_GRAPH_PUBLIC_REPO=1 vitest run --config vitest.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist coverage",
@@ -74,5 +75,11 @@
   "bugs": {
     "url": "https://github.com/mzdbxqh/artifact-graph/issues"
   },
-  "homepage": "https://github.com/mzdbxqh/artifact-graph#readme"
+  "homepage": "https://github.com/mzdbxqh/artifact-graph#readme",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
 }
