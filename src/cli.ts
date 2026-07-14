@@ -17,8 +17,11 @@ import {
   scanArtifacts,
   validateExecutableTraceability,
   validateGraph,
+  validateScenarioPrdLinkIndex,
   writeGraphCache,
+  getTargetArtifactTypes,
 } from './index.js';
+import { resolveCliTarget } from './target-selector.js';
 import { auditPackets, discoverAndAuditPackets, parseTargetsFile } from './packet-audit.js';
 import { validatePacket, validatePacketMarkdown } from './packet-validator.js';
 import { renderPacketPrompt, DEFAULT_MAX_CHARS, MIN_PROMPT_CHARS } from './packet-prompt.js';
@@ -26,7 +29,8 @@ import { validatePacketPrompt } from './packet-prompt-validator.js';
 import { auditPromptBatch, discoverAndAuditPromptBatch } from './packet-prompt-audit.js';
 import { doctorArtifactChain, renderDoctorMarkdown } from './cli-resolver.js';
 import { collectChangedPaths } from './git-changes.js';
-import { installManagedHookBlock } from './hook-installer.js';
+import { resolveGitHookPath } from './git-hook-path.js';
+import { applyPreparedManagedHookBlocks, prepareManagedHookBlock } from './hook-installer.js';
 import {
   VERSION_LOCK_PATH,
   auditVersionLock,
@@ -75,9 +79,15 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         return 0;
       }
       case 'validate': {
+        const includes = new Set(
+          typeof parsed.flags.include === 'string'
+            ? parsed.flags.include.split(',')
+            : []
+        );
         const config = await loadConfig(root);
         const graph = await scanArtifacts(root, config);
         const issues = validateGraph(graph, config);
+        issues.push(...await validateScenarioPrdLinkIndex(root, graph));
         issues.push(...await validateExecutableTraceability(root));
         if (parsed.flags.format === 'json') {
           out(`${JSON.stringify(issues, null, 2)}\n`);
@@ -128,21 +138,18 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         return 0;
       }
       case 'context': {
-        const contextTargets = [
-          typeof parsed.flags.feature === 'string' ? 'feature' : null,
-          typeof parsed.flags.scenario === 'string' ? 'scenario' : null,
-          typeof parsed.flags.decision === 'string' ? 'decision' : null,
-          typeof parsed.flags.design === 'string' ? 'design' : null,
-          typeof parsed.flags['e2e-test'] === 'string' ? 'e2e_test' : null,
-        ].filter(Boolean);
-        if (contextTargets.length !== 1) {
-          err('Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
+        const config = await loadConfig(root);
+        let resolvedTarget;
+        try {
+          resolvedTarget = resolveCliTarget(parsed.flags, config);
+        } catch (e) {
+          err(`${(e as Error).message}\n`);
+          err('Usage: artifact-graph context (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
           return 1;
         }
         const contextMode = typeof parsed.flags.mode === 'string' ? parsed.flags.mode as 'full' | 'implementation' : 'implementation';
         if (contextMode !== 'implementation' && contextMode !== 'full') {
           err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full\n`);
-          err('Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
           return 1;
         }
         const maxPerCategory = typeof parsed.flags['max-per-category'] === 'string' ? Number(parsed.flags['max-per-category']) : undefined;
@@ -151,17 +158,12 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           const num = Number(raw);
           if (!Number.isFinite(num) || num < 1 || !Number.isInteger(num)) {
             err(`Invalid --max-per-category: "${raw}". Must be a positive integer\n`);
-            err('Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n');
             return 1;
           }
         }
         const graph = await scanArtifacts(root);
         const manifest = resolveArtifactContext(graph, {
-          feature: typeof parsed.flags.feature === 'string' ? parsed.flags.feature : undefined,
-          scenario: typeof parsed.flags.scenario === 'string' ? parsed.flags.scenario : undefined,
-          decision: typeof parsed.flags.decision === 'string' ? parsed.flags.decision : undefined,
-          design: typeof parsed.flags.design === 'string' ? parsed.flags.design : undefined,
-          e2e_test: typeof parsed.flags['e2e-test'] === 'string' ? parsed.flags['e2e-test'] : undefined,
+          target: resolvedTarget,
           mode: contextMode,
           maxPerCategory,
         });
@@ -173,21 +175,18 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         return manifest.missing.length > 0 ? 1 : 0;
       }
       case 'packet': {
-        const packetTargets = [
-          typeof parsed.flags.feature === 'string' ? 'feature' : null,
-          typeof parsed.flags.scenario === 'string' ? 'scenario' : null,
-          typeof parsed.flags.decision === 'string' ? 'decision' : null,
-          typeof parsed.flags.design === 'string' ? 'design' : null,
-          typeof parsed.flags['e2e-test'] === 'string' ? 'e2e_test' : null,
-        ].filter(Boolean);
-        if (packetTargets.length !== 1) {
-          err('Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n');
+        const config = await loadConfig(root);
+        let resolvedTarget;
+        try {
+          resolvedTarget = resolveCliTarget(parsed.flags, config);
+        } catch (e) {
+          err(`${(e as Error).message}\n`);
+          err('Usage: artifact-graph packet (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]\n');
           return 1;
         }
         const packetMode = typeof parsed.flags.mode === 'string' ? parsed.flags.mode as 'full' | 'implementation' : 'implementation';
         if (packetMode !== 'implementation' && packetMode !== 'full') {
           err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full\n`);
-          err('Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n');
           return 1;
         }
         const packetMaxPerCategory = typeof parsed.flags['max-per-category'] === 'string' ? Number(parsed.flags['max-per-category']) : undefined;
@@ -196,17 +195,12 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           const num2 = Number(raw2);
           if (!Number.isFinite(num2) || num2 < 1 || !Number.isInteger(num2)) {
             err(`Invalid --max-per-category: "${raw2}". Must be a positive integer\n`);
-            err('Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n');
             return 1;
           }
         }
         const graph = await scanArtifacts(root);
         const manifest = resolveArtifactContext(graph, {
-          feature: typeof parsed.flags.feature === 'string' ? parsed.flags.feature : undefined,
-          scenario: typeof parsed.flags.scenario === 'string' ? parsed.flags.scenario : undefined,
-          decision: typeof parsed.flags.decision === 'string' ? parsed.flags.decision : undefined,
-          design: typeof parsed.flags.design === 'string' ? parsed.flags.design : undefined,
-          e2e_test: typeof parsed.flags['e2e-test'] === 'string' ? parsed.flags['e2e-test'] : undefined,
+          target: resolvedTarget,
           mode: packetMode,
           maxPerCategory: packetMaxPerCategory,
         });
@@ -231,7 +225,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         // Validate packet unless --no-validate is set
         const skipValidate = parsed.flags['no-validate'] === true;
         if (!skipValidate) {
-          const vResult = validatePacket(packet);
+          const vResult = validatePacket(packet, config);
           if (vResult.issues.length > 0) {
             for (const issue of vResult.issues) {
               err(`[${issue.severity.toUpperCase()}] ${issue.code}: ${issue.message}\n`);
@@ -272,23 +266,21 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         // --packet JSON input (Phase 2)
         const packetJsonPath = typeof parsed.flags.packet === 'string' ? parsed.flags.packet : undefined;
 
-        const promptTargets = [
-          typeof parsed.flags.feature === 'string' ? 'feature' : null,
-          typeof parsed.flags.scenario === 'string' ? 'scenario' : null,
-          typeof parsed.flags.decision === 'string' ? 'decision' : null,
-          typeof parsed.flags.design === 'string' ? 'design' : null,
-          typeof parsed.flags['e2e-test'] === 'string' ? 'e2e_test' : null,
-        ].filter(Boolean);
-
-        // --packet is mutually exclusive with --feature/--scenario/--decision
-        if (packetJsonPath && promptTargets.length > 0) {
-          err('错误：--packet 与 --feature/--scenario/--decision/--design/--e2e-test 互斥，只能指定一种输入方式\n');
+        // --packet is mutually exclusive with --target/--feature/--scenario/--decision
+        const hasAnyTarget = typeof parsed.flags.target === 'string'
+          || typeof parsed.flags.feature === 'string'
+          || typeof parsed.flags.scenario === 'string'
+          || typeof parsed.flags.decision === 'string'
+          || typeof parsed.flags.design === 'string'
+          || typeof parsed.flags['e2e-test'] === 'string';
+        if (packetJsonPath && hasAnyTarget) {
+          err('错误：--packet 与 --target/--feature/--scenario/--decision/--design/--e2e-test 互斥，只能指定一种输入方式\n');
           return 1;
         }
 
         // Must have either --packet or exactly one target
-        if (!packetJsonPath && promptTargets.length !== 1) {
-          err('Usage: artifact-graph packet-prompt (--feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]\n');
+        if (!packetJsonPath && !hasAnyTarget) {
+          err('Usage: artifact-graph packet-prompt (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]\n');
           return 1;
         }
 
@@ -339,13 +331,17 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           promptPacket = parsedPacket as ImplementationPacket;
         } else {
           // Scan artifacts for target
+          const config = await loadConfig(root);
+          let resolvedTarget;
+          try {
+            resolvedTarget = resolveCliTarget(parsed.flags, config);
+          } catch (e) {
+            err(`${(e as Error).message}\n`);
+            return 1;
+          }
           const graph = await scanArtifacts(root);
           const promptManifest = resolveArtifactContext(graph, {
-            feature: typeof parsed.flags.feature === 'string' ? parsed.flags.feature : undefined,
-            scenario: typeof parsed.flags.scenario === 'string' ? parsed.flags.scenario : undefined,
-            decision: typeof parsed.flags.decision === 'string' ? parsed.flags.decision : undefined,
-            design: typeof parsed.flags.design === 'string' ? parsed.flags.design : undefined,
-            e2e_test: typeof parsed.flags['e2e-test'] === 'string' ? parsed.flags['e2e-test'] : undefined,
+            target: resolvedTarget,
             mode: 'implementation',
           });
           if (promptManifest.missing.length > 0) {
@@ -414,6 +410,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         let sampleTargets: string[] | undefined;
         if (sampleTargetsRaw) {
           sampleTargets = sampleTargetsRaw.split(',').map((s) => s.trim()).filter(Boolean);
+          const auditConfig = await loadConfig(root);
+          const validTargetTypes = getTargetArtifactTypes(auditConfig);
           for (const st of sampleTargets) {
             const colonIdx = st.indexOf(':');
             if (colonIdx < 0) {
@@ -421,8 +419,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
               return 1;
             }
             const stType = st.slice(0, colonIdx).trim();
-            if (!['feature', 'scenario', 'decision', 'design', 'e2e_test'].includes(stType)) {
-              err(`Invalid --sample-targets entry: "${st}". Type must be feature, scenario, decision, design, or e2e_test\n`);
+            if (!validTargetTypes.includes(stType)) {
+              err(`Invalid --sample-targets entry: "${st}". Type must be one of: ${validTargetTypes.join(', ')}\n`);
               return 1;
             }
             const stId = st.slice(colonIdx + 1).trim();
@@ -488,7 +486,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           });
         } else {
           const targetsContent = await readFile(targetsFile!, 'utf-8');
-          const parseResult = parseTargetsFile(targetsContent);
+          const auditConfig2 = await loadConfig(root);
+          const parseResult = parseTargetsFile(targetsContent, auditConfig2);
           if (parseResult.errors.length > 0) {
             for (const e of parseResult.errors) {
               err(`Parse error (line ${e.line}): ${e.message} — ${e.raw}\n`);
@@ -509,6 +508,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             summaryOnly,
             sampleTargets,
             summaryDetail,
+            schema: auditConfig2,
           });
         }
         if (parsed.flags.format === 'json') {
@@ -612,7 +612,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             err(`错误：targets 文件为空: "${ppaTargetsFile}"\n`);
             return 1;
           }
-          const ppaParseResult = parseTargetsFile(ppaTargetsContent);
+          const ppaConfig = await loadConfig(root);
+          const ppaParseResult = parseTargetsFile(ppaTargetsContent, ppaConfig);
           if (ppaParseResult.errors.length > 0) {
             for (const e of ppaParseResult.errors) {
               err(`Parse error (line ${e.line}): ${e.message} — ${e.raw}\n`);
@@ -817,19 +818,25 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           return 1;
         }
         const hookFlag = typeof parsed.flags.hook === 'string' ? parsed.flags.hook : 'all';
-        const hooks = hookFlag === 'all' ? ['pre-commit', 'pre-push'] : [hookFlag];
+        if (hookFlag !== 'all' && hookFlag !== 'pre-commit' && hookFlag !== 'pre-push') {
+          err(`Unsupported hook: ${hookFlag}\n`);
+          return 1;
+        }
+        const hooks: Array<'pre-commit' | 'pre-push'> = hookFlag === 'all'
+          ? ['pre-commit', 'pre-push']
+          : [hookFlag];
+        const prepared = [];
         for (const hookName of hooks) {
-          if (hookName !== 'pre-commit' && hookName !== 'pre-push') {
-            err(`Unsupported hook: ${hookName}\n`);
-            return 1;
-          }
           const templatePath = fileURLToPath(new URL(`../templates/git-hooks/${hookName}.sh`, import.meta.url));
           const block = await readFile(templatePath, 'utf-8');
-          const result = await installManagedHookBlock({
-            hookPath: join(root, `.git/hooks/${hookName}`),
+          prepared.push(await prepareManagedHookBlock({
+            hookPath: await resolveGitHookPath(root, hookName),
             block,
             uninstall: parsed.flags.uninstall === true,
-          });
+          }));
+        }
+        const results = await applyPreparedManagedHookBlocks(prepared);
+        for (const result of results) {
           out(`${result.action}: ${result.hookPath}\n`);
         }
         return 0;
@@ -913,13 +920,13 @@ function helpText(): string {
 Commands:
   init
   scan
-  validate [--format json] [--warning-only]
+  validate [--format json] [--warning-only] [--include scenario-prd-links]
   query --from <code> [--format json]
-  context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]
-  packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]
-  packet-prompt (--feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]
+  context (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json]
+  packet (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]
+  packet-prompt (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]
   packet-audit (--targets-file <path> | --discover) [--out-dir <path>] [--limit <n>] [--format json|markdown] [--mode full|implementation] [--max-per-category <n>] [--summary-only] [--sample-targets <type:id,...>] [--summary-detail full|compact]
-  packet-prompt-audit --targets-file <path> [--out-dir <path>] [--format json|markdown] [--max-chars <n>]
+  packet-prompt-audit (--targets-file <path> | --discover) [--out-dir <path>] [--format json|markdown] [--max-chars <n>] [--limit <n>] [--summary-only] [--summary-detail full|compact]
   version-index [--format json] [--out <path>]
   version-lock audit [--format json|markdown] [--warning-only] [--strict-missing-lock] [--lock-path <path>]
   version-lock update --target <type:id> --source <path> [--verified-by <path,path>] [--lock-path <path>]

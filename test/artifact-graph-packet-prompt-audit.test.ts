@@ -617,3 +617,54 @@ describe('CLI: packet-prompt-audit command', () => {
     expect(output.countsByType.feature.total).toBe(1);
   });
 });
+
+describe('custom target: prompt audit', () => {
+  async function customPromptAuditRepo(): Promise<string> {
+    const root = join(tmpdir(), `prompt-audit-custom-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+
+    // Config with custom target type
+    await write(root, 'artifact-graph.config.yaml', `types:
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    displayName: "API Contract"
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+    // Baseline files
+    for (const bf of BASELINE_FILES) {
+      await write(root, bf.path, bf.content);
+    }
+    // Feature
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+scenarios: [S-01]
+design_docs: [design-skill-import]
+---
+# A1: Skill import/register
+`);
+    // Custom target artifact
+    await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_features: [A1]
+---
+# Order API
+`);
+    return root;
+  }
+
+  it('auditPromptBatch handles custom target type via target field', async () => {
+    const root = await customPromptAuditRepo();
+    const summary = await auditPromptBatch(root, [
+      { type: 'api_contract', id: 'API-001' },
+    ], { root, summaryOnly: true });
+    expect(summary.total).toBe(1);
+    expect(summary.targets[0].type).toBe('api_contract');
+    expect(summary.targets[0].id).toBe('API-001');
+  });
+});

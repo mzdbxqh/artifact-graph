@@ -871,14 +871,17 @@ function stableEntryJson(entry: VersionLockEntry): string {
 
 function normalizeVersionEdgeKind(edge: ArtifactEdge): VersionEdgeKind | string {
   if (edge.source === 'test-comment') {
-    return edge.sourcePath.match(/\.(test|spec)\.(ts|tsx|rs)$/) ? 'verifies' : 'implements';
+    return edge.kind === 'verifies' ? 'verifies' : 'implements';
   }
   return edge.kind;
 }
 
 function classifyNode(node: ArtifactNode): VersionSourceKind {
+  if (node.type === 'implementation') {
+    return 'code';
+  }
   if (node.type === 'test') {
-    return node.path.match(/\.(test|spec)\.(ts|tsx|rs)$/) ? 'test' : 'code';
+    return 'test';
   }
   return 'artifact';
 }

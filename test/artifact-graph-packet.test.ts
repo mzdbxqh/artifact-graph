@@ -1082,6 +1082,24 @@ describe('validatePacket', () => {
     expect(issue!.message).toContain('entity');
   });
 
+  it('PKT-002: schema role can make a legacy core type context-only', () => {
+    const packet = validPacket();
+    const schema = {
+      types: {
+        feature: { role: 'context' },
+        scenario: { role: 'scenario' },
+      },
+      idPatterns: {},
+    };
+
+    const result = validatePacket(packet, schema);
+
+    expect(result.ok).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: 'PKT-002', path: 'target.type' }),
+    ]));
+  });
+
   // PKT-003
   it('PKT-003: empty target.id produces error', () => {
     const packet = validPacket();
@@ -1936,5 +1954,84 @@ pnpm build && pnpm test
     expect(codes).toContain('PP-005');
     expect(codes).toContain('PP-006');
     expect(codes).toContain('PP-007');
+  });
+});
+
+describe('custom target: packet with --target flag', () => {
+  async function customTargetPacketRepo(): Promise<string> {
+    const root = join(tmpdir(), `packet-custom-target-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `types:
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    displayName: "API Contract"
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+    // Baseline files
+    for (const bf of BASELINE_FILES) {
+      await write(root, bf.path, bf.content);
+    }
+    // Feature for traceability
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+scenarios: [S-01]
+design_docs: [design-skill-import]
+---
+# A1: Skill import/register
+`);
+    // Custom target artifact
+    await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_features: [A1]
+---
+# Order API
+`);
+    return root;
+  }
+
+  it('packet --target api_contract:API-001 generates valid packet via CLI', async () => {
+    const root = await customTargetPacketRepo();
+    let stdout = '';
+    let stderr = '';
+    const code = await runCli(['packet', '--root', root, '--target', 'api_contract:API-001', '--format', 'json', '--no-validate'], {
+      stdout: (c) => { stdout += c; },
+      stderr: (c) => { stderr += c; },
+    });
+    expect(code).toBe(0);
+    const packet = JSON.parse(stdout);
+    expect(packet.target.type).toBe('api_contract');
+    expect(packet.target.id).toBe('API-001');
+  });
+
+  it('packet --target with colon in ID works', async () => {
+    const root = await customTargetPacketRepo();
+    // Add an e2e_test artifact with colon in ID
+    await write(root, 'artifacts/tests/e2e/test-batch.md', `---
+test_batch: batch-001
+scope: test
+related_scenarios: []
+---
+# E2E Test Batch
+
+## TC-001: Test case
+`);
+    let stdout = '';
+    let stderr = '';
+    const code = await runCli(['packet', '--root', root, '--target', 'e2e_test:batch-001:TC-001', '--format', 'json', '--no-validate'], {
+      cwd: root,
+      stdout: (c) => { stdout += c; },
+      stderr: (c) => { stderr += c; },
+    });
+    // Hard-assert exit 0 — no silent pass on failure
+    expect(code).toBe(0);
+    const packet = JSON.parse(stdout);
+    expect(packet.target.type).toBe('e2e_test');
+    expect(packet.target.id).toBe('batch-001:TC-001');
   });
 });

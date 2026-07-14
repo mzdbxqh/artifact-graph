@@ -23,6 +23,32 @@ declare const BASELINE_CONSTRAINTS: {
 declare const BASELINE_CONSTRAINTS_COUNT: number;
 
 /**
+ * target-selector.ts
+ *
+ * Unified target selector for the artifact-graph CLI.
+ * Parses `--target <type>:<id>` and resolves from legacy flags,
+ * enforcing mutual exclusivity between the two forms.
+ */
+
+/**
+ * Parse a `<type>:<id>` selector string, splitting only on the first colon.
+ * Colons within the ID portion are preserved (e.g. `e2e_test:batch:TC-001` → `{ type: 'e2e_test', id: 'batch:TC-001' }`).
+ */
+declare function parseTargetSelector(value: string): ArtifactTarget;
+/**
+ * Resolve the effective target from CLI flags.
+ *
+ * Accepts either `--target <type>:<id>` OR one of the legacy flags (`--feature`, `--scenario`, etc.).
+ * Mixing both forms is a hard error.
+ *
+ * @param flags  Parsed CLI flags (Record<string, string | boolean>)
+ * @param schema Loaded artifact schema — used to verify target capability
+ * @returns Resolved ArtifactTarget
+ * @throws Error on invalid/mutually-exclusive/unsupported flags
+ */
+declare function resolveCliTarget(flags: Record<string, string | boolean>, schema: ArtifactSchema): ArtifactTarget;
+
+/**
  * packet-assembler.ts
  *
  * Deterministic implementation packet assembly from context manifest.
@@ -161,12 +187,28 @@ declare function renderPacketMarkdown(packet: ImplementationPacket): string;
  *
  * Schema validation for implementation packets.
  * Validates both structured JSON packets and rendered Markdown packets.
+ *
+ * v1.12: accepts optional schema to derive valid target types dynamically.
+ * Without schema, falls back to the static VALID_PACKET_TARGET_TYPES list.
  */
 
-/** Valid target types for packets */
+/** Valid target types for packets (legacy static fallback) */
 declare const VALID_PACKET_TARGET_TYPES: readonly ["feature", "scenario", "decision", "design", "e2e_test"];
 type PacketTargetType = typeof VALID_PACKET_TARGET_TYPES[number];
 declare function isPacketTargetType(type: string): type is PacketTargetType;
+/**
+ * Check whether a type is a valid packet target, optionally using a loaded schema.
+ * When a schema is provided, uses dynamic target-capable types.
+ * Without schema, uses the static VALID_PACKET_TARGET_TYPES.
+ */
+type PacketTargetSchema = {
+    types: Record<string, {
+        target?: boolean;
+        role?: string;
+    }>;
+    idPatterns?: Record<string, string>;
+};
+declare function isPacketTargetTypeDynamic(type: string, schema?: PacketTargetSchema): boolean;
 interface PacketValidationIssue {
     severity: 'error' | 'warning';
     code: string;
@@ -189,7 +231,7 @@ interface PacketValidationResult {
  * - PKT-006: validationCommands must have at least 4 entries
  * - PKT-007: missing.length > 0 is a warning
  */
-declare function validatePacket(packet: ImplementationPacket): PacketValidationResult;
+declare function validatePacket(packet: ImplementationPacket, schema?: PacketTargetSchema): PacketValidationResult;
 /**
  * Validate a rendered Markdown packet for required section structure.
  *
@@ -268,6 +310,8 @@ interface AuditOptions {
     sampleTargets?: string[];
     /** Detail level: 'full' includes all targets, 'compact' omits passed targets */
     summaryDetail?: 'full' | 'compact';
+    /** Artifact schema for dynamic target type validation in validatePacket */
+    schema?: ArtifactSchema;
 }
 interface ParseError {
     line: number;
@@ -282,8 +326,12 @@ interface ParseResult {
  * Parse a targets file where each line is `type:id`.
  * Blank lines and lines starting with `#` are skipped.
  * Returns structured result with valid targets and parse errors.
+ *
+ * When a schema is provided, target types are validated against the schema's
+ * target-capable types (dynamic). Without a schema, falls back to the static
+ * VALID_PACKET_TARGET_TYPES list for backward compatibility.
  */
-declare function parseTargetsFile(content: string): ParseResult;
+declare function parseTargetsFile(content: string, schema?: ArtifactSchema): ParseResult;
 /**
  * Audit a list of targets by generating packets for each.
  * Each target is processed independently — a single failure does not abort the batch.
@@ -299,6 +347,8 @@ interface DiscoverAuditOptions {
     summaryOnly?: boolean;
     sampleTargets?: string[];
     summaryDetail?: 'full' | 'compact';
+    /** Artifact schema for dynamic target type validation */
+    schema?: ArtifactSchema;
 }
 /**
  * Scan artifacts, discover targets, then audit packets for each.
@@ -561,6 +611,9 @@ interface GitChangeResult {
 }
 declare function collectChangedPaths(root: string, options: CollectChangedPathsOptions): Promise<GitChangeResult>;
 
+type GitHookName = 'pre-commit' | 'pre-push';
+declare function resolveGitHookPath(root: string, hookName: GitHookName): Promise<string>;
+
 interface ManagedHookBlockOptions {
     hookPath: string;
     block: string;
@@ -572,6 +625,31 @@ interface HookInstallResult {
     action: 'installed' | 'replaced' | 'uninstalled' | 'unchanged';
     markerId: string;
 }
+type HookEntryKind = 'missing' | 'file' | 'symlink' | 'other';
+interface HookSnapshot {
+    kind: HookEntryKind;
+    bytes: Buffer;
+    dev?: bigint;
+    ino?: bigint;
+    size?: bigint;
+    mtimeNs?: bigint;
+    mode?: bigint;
+    linkTarget?: string;
+}
+interface DesiredHookState {
+    exists: boolean;
+    bytes: Buffer;
+    mode?: number;
+}
+interface PreparedManagedHookBlock {
+    readonly hookPath: string;
+    readonly result: HookInstallResult;
+    readonly snapshot: HookSnapshot;
+    readonly desired: DesiredHookState;
+    readonly writeRequired: boolean;
+}
+declare function prepareManagedHookBlock(options: ManagedHookBlockOptions): Promise<PreparedManagedHookBlock>;
+declare function applyPreparedManagedHookBlocks(prepared: readonly PreparedManagedHookBlock[]): Promise<HookInstallResult[]>;
 declare function installManagedHookBlock(options: ManagedHookBlockOptions): Promise<HookInstallResult>;
 
 interface ArtifactNode {
@@ -602,6 +680,11 @@ interface ValidationIssue {
     path: string;
     line: number;
 }
+interface ArtifactExtraFieldSchema {
+    name: string;
+    type: 'string' | 'number' | 'boolean' | 'enum';
+    enum?: Array<string | number | boolean>;
+}
 interface ArtifactTypeSchema {
     paths: string[];
     idPattern?: string;
@@ -609,6 +692,12 @@ interface ArtifactTypeSchema {
     role?: ArtifactTypeRole;
     layer?: string;
     aliases?: string[];
+    target?: boolean;
+    extraFields?: ArtifactExtraFieldSchema[];
+}
+interface ArtifactTarget {
+    type: string;
+    id: string;
 }
 interface ArtifactEdgeRule {
     from: string;
@@ -641,11 +730,20 @@ interface ArtifactTypeMetadata {
 }
 declare function isTargetArtifactType(type: string): type is TargetArtifactType;
 declare function getArtifactTypeMetadata(schema: ArtifactSchema, type: string): ArtifactTypeMetadata;
-declare function getTargetArtifactTypes(schema?: ArtifactSchema): TargetArtifactType[];
+declare function getTargetArtifactTypes(schema?: ArtifactSchema): string[];
+/**
+ * Resolve a token (which may be an exact type name or an explicit alias) to
+ * the canonical artifact type name. Returns `undefined` if no match.
+ *
+ * Strict matching only — no automatic hyphen/underscore conversion.
+ */
+declare function resolveArtifactTypeName(schema: ArtifactSchema, token: string): string | undefined;
 interface ArtifactGraph {
     nodes: ArtifactNode[];
     edges: ArtifactEdge[];
     generatedAt: string;
+    /** Scan-time diagnostics. Optional for backward compatibility with consumers that build graph literals without this field. */
+    diagnostics?: ValidationIssue[];
 }
 interface QueryOptions {
     from?: string;
@@ -689,12 +787,14 @@ interface ContextOptions {
     decision?: string;
     design?: string;
     e2e_test?: string;
+    /** Unified target (type + id) resolved from `--target <type>:<id>`. Additive — old fields preserved. */
+    target?: ArtifactTarget;
     mode?: ContextMode;
     maxPerCategory?: number;
 }
 declare const DEFAULT_SCHEMA: ArtifactSchema;
 declare function loadConfig(root: string): Promise<ArtifactSchema>;
-declare function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[]): ArtifactGraph;
+declare function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics?: ValidationIssue[]): ArtifactGraph;
 declare function scanArtifacts(root: string, schema?: ArtifactSchema): Promise<ArtifactGraph>;
 /**
  * Resolve traceability-matrix-v2 edges:
@@ -704,6 +804,8 @@ declare function scanArtifacts(root: string, schema?: ArtifactSchema): Promise<A
  */
 declare function resolveMatrixEdges(graph: ArtifactGraph): ArtifactGraph;
 declare function validateGraph(graph: ArtifactGraph, schema?: ArtifactSchema): ValidationIssue[];
+declare function validateScenarioPrdLinks(graph: ArtifactGraph, schema?: ArtifactSchema): ValidationIssue[];
+declare function validateScenarioPrdLinkIndex(root: string, graph: ArtifactGraph): Promise<ValidationIssue[]>;
 declare function queryGraph(graph: ArtifactGraph, options: QueryOptions): ArtifactGraph;
 declare function renderMermaid(graph: ArtifactGraph): string;
 declare function nextId(graph: ArtifactGraph, schema: ArtifactSchema, type: string, rangeName: string): string;
@@ -727,4 +829,4 @@ declare function discoverTargets(graph: ArtifactGraph, options?: DiscoverOptions
 declare function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOptions): ContextManifest;
 declare function formatContextMarkdown(manifest: ContextManifest): string;
 
-export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type GitChangeMode, type GitChangeResult, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type ResolveArtifactGraphCliOptions, type ReviewOrderStep, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isTargetArtifactType, loadConfig, nextId, parseTargetsFile, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, writeGraphCache };
+export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PreparedManagedHookBlock, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type ResolveArtifactGraphCliOptions, type ReviewOrderStep, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, nextId, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, writeGraphCache };

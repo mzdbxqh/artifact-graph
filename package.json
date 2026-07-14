@@ -1,6 +1,6 @@
 {
   "name": "artifact-graph",
-  "version": "0.1.4",
+  "version": "0.3.0",
   "description": "Git-native Markdown artifact graph scanner and validator",
   "license": "Apache-2.0",
   "type": "module",
@@ -63,6 +63,7 @@
     "CHANGELOG.md",
     "LICENSE",
     "NOTICE",
+    "INSTALL.md",
     "dist",
     "scripts",
     "templates"

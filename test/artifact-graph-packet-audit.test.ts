@@ -904,7 +904,7 @@ describe('sample-targets mode', () => {
     const io = captureIo();
     const code = await runCli(['packet-audit', '--root', root, '--targets-file', targetsFile, '--out-dir', outDir, '--sample-targets', 'bogus:A1'], io);
     expect(code).toBe(1);
-    expect(io.stderrText).toContain('Type must be feature, scenario, decision, design, or e2e_test');
+    expect(io.stderrText).toContain('Type must be one of:');
   });
 
   it('CLI --sample-targets empty id exits 1', async () => {
@@ -1264,5 +1264,90 @@ describe('compact summary mode', () => {
     expect(summary.failed).toBe(0);
     expect(summary.targets).toHaveLength(0);
     expect(summary.countsByType).toEqual({ feature: 1, scenario: 1 });
+  });
+});
+
+describe('custom target: packet audit', () => {
+  async function customAuditRepo(): Promise<string> {
+    const root = join(tmpdir(), `packet-audit-custom-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+
+    // Config with custom target type
+    await write(root, 'artifact-graph.config.yaml', `types:
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    displayName: "API Contract"
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+    // Baseline files
+    for (const bf of BASELINE_FILES) {
+      await write(root, bf.path, bf.content);
+    }
+    // Feature
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+scenarios: [S-01]
+design_docs: [design-skill-import]
+---
+# A1: Skill import/register
+`);
+    // Custom target artifact
+    await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_features: [A1]
+---
+# Order API
+`);
+    return root;
+  }
+
+  it('parseTargetsFile accepts custom target type when schema provided', async () => {
+    const { parseTargetsFile } = await import('../src/packet-audit.js');
+    const { loadConfig } = await import('../src/index.js');
+    const root = await customAuditRepo();
+    const config = await loadConfig(root);
+    const result = parseTargetsFile('api_contract:API-001\n', config);
+    expect(result.targets).toEqual([{ type: 'api_contract', id: 'API-001' }]);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  it('parseTargetsFile rejects custom target type without schema', async () => {
+    const { parseTargetsFile } = await import('../src/packet-audit.js');
+    const result = parseTargetsFile('api_contract:API-001\n');
+    expect(result.targets).toHaveLength(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0].message).toContain('非法类型');
+  });
+
+  it('discoverTargets finds custom target types', async () => {
+    const { discoverTargets, scanArtifacts, loadConfig } = await import('../src/index.js');
+    const root = await customAuditRepo();
+    const config = await loadConfig(root);
+    const graph = await scanArtifacts(root, config);
+    const targets = discoverTargets(graph, { schema: config });
+    const apiTargets = targets.filter((t) => t.type === 'api_contract');
+    expect(apiTargets).toEqual([{ type: 'api_contract', id: 'API-001' }]);
+  });
+
+  it('auditPackets handles custom target type', async () => {
+    const root = await customAuditRepo();
+    const { loadConfig } = await import('../src/index.js');
+    const config = await loadConfig(root);
+    const summary = await auditPackets(root, [
+      { type: 'api_contract', id: 'API-001' },
+    ], { root, summaryOnly: true, schema: config });
+    expect(summary.total).toBe(1);
+    expect(summary.targets[0].type).toBe('api_contract');
+    expect(summary.targets[0].id).toBe('API-001');
+    // Custom target must pass audit — no PKT-002 rejection
+    expect(summary.targets[0].status).toBe('passed');
+    const pkt002 = (summary.targets[0].validationIssues ?? []).filter((i) => i.code === 'PKT-002');
+    expect(pkt002).toHaveLength(0);
   });
 });

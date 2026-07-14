@@ -14,12 +14,14 @@ import {
   queryGraph,
   renderMermaid,
   resolveArtifactContext,
+  resolveArtifactTypeName,
   scanArtifacts,
   validateExecutableTraceability,
   validateGraph,
+  validateScenarioPrdLinks,
   writeGraphCache,
 } from '../src/index.js';
-import type { MissingDetail } from '../src/index.js';
+import type { ArtifactGraph, MissingDetail } from '../src/index.js';
 import { auditPackets, parseTargetsFile } from '../src/packet-audit.js';
 
 async function write(root: string, path: string, content: string): Promise<void> {
@@ -58,7 +60,7 @@ forbiddenEdges:
   - from: scenario
     to: entity
     kind: references
-statuses: [planned, active, done, deprecated]
+statuses: [planned, active, done, deprecated, accepted]
 idRanges:
   scenario:
     batch-49:
@@ -244,6 +246,21 @@ related_features: [ABCD1]
 
   await write(
     root,
+    'artifacts/decisions/D-FRONTMATTER-01.md',
+    `---
+id: D-FRONTMATTER-01
+title: Decision frontmatter test
+status: accepted
+related_features: [A1]
+related_scenarios: [S-01]
+---
+
+# D-FRONTMATTER-01: Decision frontmatter test
+`,
+  );
+
+  await write(
+    root,
     'heimdall/packages/core/test/import.test.ts',
     `// @scenario S-01  @feature A1  @entity E-001  @decision D-TOOL-02
 describe('import', () => {});
@@ -394,6 +411,7 @@ describe('artifact graph core', () => {
 
       expect(graph.nodes.map((node) => node.uid)).toEqual([
         'decision:D-ARCH-01',
+        'decision:D-FRONTMATTER-01',
         'decision:D-SCAN-01',
         'decision:D-TOOL-02',
         'design:design-four-letter',
@@ -409,6 +427,24 @@ describe('artifact graph core', () => {
         'scenario:S-03',
         'test:heimdall/packages/core/test/import.test.ts',
       ]);
+
+      // Verify decision frontmatter edges
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: 'decision:D-FRONTMATTER-01',
+          to: 'feature:A1',
+          kind: 'references',
+          source: 'frontmatter',
+        }),
+      );
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: 'decision:D-FRONTMATTER-01',
+          to: 'scenario:S-01',
+          kind: 'references',
+          source: 'frontmatter',
+        }),
+      );
       expect(graph.edges).toContainEqual(
         expect.objectContaining({ from: 'feature:A1', to: 'scenario:S-01', kind: 'covers', source: 'frontmatter' }),
       );
@@ -441,6 +477,50 @@ describe('artifact graph core', () => {
     }
   });
 
+  it('parses decision frontmatter with id, status, related_features, and related_scenarios', async () => {
+    const root = await fixtureRepo('decision-frontmatter');
+    try {
+      const graph = await scanArtifacts(root);
+      const config = await loadConfig(root);
+
+      // Verify decision node is parsed from frontmatter
+      const decisionNode = graph.nodes.find((n) => n.uid === 'decision:D-FRONTMATTER-01');
+      expect(decisionNode).toBeDefined();
+      expect(decisionNode?.type).toBe('decision');
+      expect(decisionNode?.code).toBe('D-FRONTMATTER-01');
+      expect(decisionNode?.title).toBe('Decision frontmatter test');
+      expect(decisionNode?.status).toBe('accepted');
+      expect(decisionNode?.path).toBe('artifacts/decisions/D-FRONTMATTER-01.md');
+
+      // Verify related_features edges are created
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: 'decision:D-FRONTMATTER-01',
+          to: 'feature:A1',
+          kind: 'references',
+          source: 'frontmatter',
+        }),
+      );
+
+      // Verify related_scenarios edges are created
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({
+          from: 'decision:D-FRONTMATTER-01',
+          to: 'scenario:S-01',
+          kind: 'references',
+          source: 'frontmatter',
+        }),
+      );
+
+      // Verify validation passes with valid frontmatter
+      const issues = validateGraph(graph, config);
+      const decisionIssues = issues.filter((i) => i.path?.includes('D-FRONTMATTER-01'));
+      expect(decisionIssues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('validates duplicates, dangling references, forbidden scenario entity links, status, reverse mismatch, and design coverage', async () => {
     const root = await fixtureRepo('validate');
     try {
@@ -459,6 +539,218 @@ describe('artifact graph core', () => {
       expect(issues.find((issue) => issue.code === 'FORBIDDEN_EDGE')?.message).toContain('scenario -> entity');
       expect(issues.find((issue) => issue.code === 'DANGLING_REFERENCE')?.message).toContain('S-9999');
       expect(issues.find((issue) => issue.code === 'DESIGN_COVERAGE_MISSING')?.message).toContain('feature:B6');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('validates scenario to PRD duplicate links and orphan links from raw relation occurrences', async () => {
+    const root = await fixtureRepo('scenario-prd-duplicates');
+    try {
+      await write(
+        root,
+        'artifacts/scenarios/batch-duplicates.md',
+        `## S-10: Duplicate links on separate lines
+
+**关联功能**: C1
+**关联功能**: C1
+
+## S-11: Duplicate links on one line
+
+**关联功能**: C2, C2
+
+## S-12: No feature link
+`,
+      );
+      await write(
+        root,
+        'artifacts/prd/features/C1-duplicate-lines.md',
+        `---
+id: C1
+title: Duplicate line feature
+status: done
+scenarios: [S-10]
+design_docs: []
+---
+# C1
+`,
+      );
+      await write(
+        root,
+        'artifacts/prd/features/C2-duplicate-inline.md',
+        `---
+id: C2
+title: Duplicate inline feature
+status: done
+scenarios: [S-11, S-11]
+design_docs: []
+---
+# C2
+`,
+      );
+
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph, await loadConfig(root));
+
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'DUPLICATE',
+        message: expect.stringContaining('scenario:S-10 repeats feature:C1'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'DUPLICATE',
+        message: expect.stringContaining('scenario:S-11 repeats feature:C2'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'DUPLICATE',
+        message: expect.stringContaining('feature:C2 repeats scenario:S-11'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'ORPHAN_SCENARIO',
+        node: 'scenario:S-12',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('validates scenario to PRD link direction, format, and feature orphan issues', async () => {
+    const root = await fixtureRepo('scenario-prd-link-consistency');
+    try {
+      await write(
+        root,
+        'artifacts/scenarios/batch-links.md',
+        `## S-20: Forward only link
+
+**关联功能**: C3
+
+## S-21: Backward only target
+
+**关联功能**: C999
+
+## S-22: Bad feature token
+
+**关联功能**: BAD-ID
+`,
+      );
+      await write(
+        root,
+        'artifacts/prd/features/C3-forward-only.md',
+        `---
+id: C3
+title: Forward only
+status: done
+scenarios: []
+design_docs: []
+---
+# C3
+`,
+      );
+      await write(
+        root,
+        'artifacts/prd/features/C4-backward-only.md',
+        `---
+id: C4
+title: Backward only
+status: done
+scenarios: [S-21, SX-1]
+design_docs: []
+---
+# C4
+`,
+      );
+      await write(
+        root,
+        'artifacts/prd/features/C5-orphan.md',
+        `---
+id: C5
+title: Orphan feature
+status: done
+scenarios: []
+design_docs: []
+---
+# C5
+`,
+      );
+
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph, await loadConfig(root));
+
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'LINK_FORWARD_MISSING',
+        message: expect.stringContaining('scenario:S-20 references feature:C3'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'LINK_BACKWARD_MISSING',
+        message: expect.stringContaining('feature:C4 covers scenario:S-21'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'ORPHAN_FEATURE',
+        node: 'feature:C5',
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'FORMAT_ERROR',
+        message: expect.stringContaining('BAD-ID'),
+      }));
+      expect(issues).toContainEqual(expect.objectContaining({
+        code: 'FORMAT_ERROR',
+        message: expect.stringContaining('SX-1'),
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('passes scenario to PRD link validation for a golden case', async () => {
+    const root = await fixtureRepo('scenario-prd-golden');
+    try {
+      await write(
+        root,
+        'artifacts/scenarios/batch-golden.md',
+        `## S-30: Golden link
+
+**关联功能**: C6
+`,
+      );
+      await write(
+        root,
+        'artifacts/prd/features/C6-golden.md',
+        `---
+id: C6
+title: Golden feature
+status: done
+scenarios: [S-30]
+design_docs: [design-golden]
+---
+# C6
+`,
+      );
+      await write(
+        root,
+        'artifacts/design/design-golden.md',
+        `---
+title: Golden design
+related_features: [C6]
+related_scenarios: [S-30]
+---
+# Golden
+`,
+      );
+
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const scenarioPrdCodes = validateGraph(graph, await loadConfig(root))
+        .filter((issue) => issue.path.includes('batch-golden.md') || issue.path.includes('C6-golden.md'))
+        .map((issue) => issue.code)
+        .filter((code) => [
+          'LINK_FORWARD_MISSING',
+          'LINK_BACKWARD_MISSING',
+          'ORPHAN_SCENARIO',
+          'ORPHAN_FEATURE',
+          'DUPLICATE',
+          'FORMAT_ERROR',
+          'INDEX_MISMATCH',
+        ].includes(code));
+
+      expect(scenarioPrdCodes).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1565,7 +1857,7 @@ related_scenarios: [S-20]
       await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
       await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
 
-      // The primary ref points to a file that exists and has @tc
+      // The primary ref points to a file that exists and has a @-tc tag
       await writeFile(
         join(root, 'heimdall/packages/desktop/e2e/chain.spec.ts'),
         `// @tc test-trace-multi:TC-001 [desktop_chain]
@@ -1615,7 +1907,7 @@ related_scenarios: [S-20]
       expect(trace001.length).toBe(1);
       expect(trace001[0].message).toContain('nope.spec.ts');
 
-      // Should NOT have E2E-TRACE-003 (bidirectional mismatch) — the valid ref matches @tc
+      // Should NOT have E2E-TRACE-003 (bidirectional mismatch) — the valid ref matches a @-tc tag
       const trace003 = issues.filter(
         (issue) => issue.code === 'E2E-TRACE-003' && issue.node === 'test-trace-multi:TC-001',
       );
@@ -1926,7 +2218,7 @@ describe('bridge chain', () => {
 `,
       );
 
-      // Create the .rs file with matching @tc annotation (//! @tc format)
+      // Create the .rs file with matching @-tc annotation (//! @-tc format)
       await writeFile(
         join(root, 'heimdall/packages/desktop/src-tauri/tests/chain_test.rs'),
         `//! @tc test-trace-bridge:TC-001 [partial_rust]
@@ -2091,8 +2383,8 @@ related_scenarios: [S-20]
       );
 
       const issues = await validateExecutableTraceability(root);
-      // Block comment @tc should NOT be found → new Check A fires E2E-TRACE-003
-      // (file exists but has no // @tc line-comment annotation for this TC)
+      // Block comment @-tc should NOT be found → new Check A fires E2E-TRACE-003
+      // (file exists but has no //@-tc line-comment annotation for this TC)
       const trace003 = issues.filter((issue) => issue.code === 'E2E-TRACE-003');
       expect(trace003.length).toBe(1);
       expect(trace003[0].message).toContain('no // @tc');
@@ -2180,7 +2472,7 @@ describe('bridge wrong tc', () => {
 `,
       );
 
-      // .rs file has @tc for a DIFFERENT TC
+      // .rs file has a @-tc tag for a DIFFERENT TC
       await writeFile(
         join(root, 'heimdall/packages/desktop/src-tauri/tests/wrong_tc_test.rs'),
         `//! @tc test-trace-wrongtc:TC-999 [partial_rust]
@@ -2631,7 +2923,7 @@ related_scenarios: [S-20]
       await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
       await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
 
-      // Rust file uses //! @tc (doc-comment format)
+      // Rust file uses //! @-tc (doc-comment format)
       await writeFile(
         join(root, 'heimdall/packages/desktop/e2e/rust-doc.spec.ts'),
         `//! @tc test-trace-doc:TC-001 [desktop_chain]
@@ -2675,7 +2967,7 @@ related_scenarios: [S-20]
       );
 
       const issues = await validateExecutableTraceability(root);
-      // No E2E-TRACE-003 — the //! @tc annotation should be recognized
+      // No E2E-TRACE-003 — the //! @-tc annotation should be recognized
       const trace003 = issues.filter((issue) => issue.code === 'E2E-TRACE-003');
       expect(trace003).toEqual([]);
       // No E2E-TRACE-006 — desktop_chain is complete
@@ -5828,6 +6120,1703 @@ describe('discoverTargets', () => {
       const graphTypes = new Set(graph.nodes.map((n) => n.type));
       expect(graphTypes.has('entity')).toBe(true);
       expect(graphTypes.has('test')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('custom type runtime: config-driven target, extraFields, and diagnostics', () => {
+  it('returns targetCapable=true for explicit target:true custom type', async () => {
+    const root = await fixtureRepo('custom-target');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    displayName: API Contract
+    layer: contract
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      const config = await loadConfig(root);
+
+      // Custom type with explicit target:true should be targetCapable
+      expect(getArtifactTypeMetadata(config, 'api_contract')).toEqual(expect.objectContaining({
+        type: 'api_contract',
+        targetCapable: true,
+        displayName: 'API Contract',
+        layer: 'contract',
+      }));
+
+      // Legacy core types still targetCapable
+      expect(getArtifactTypeMetadata(config, 'feature')).toEqual(expect.objectContaining({
+        targetCapable: true,
+      }));
+      expect(getArtifactTypeMetadata(config, 'scenario')).toEqual(expect.objectContaining({
+        targetCapable: true,
+      }));
+      expect(getArtifactTypeMetadata(config, 'decision')).toEqual(expect.objectContaining({
+        targetCapable: true,
+      }));
+      expect(getArtifactTypeMetadata(config, 'design')).toEqual(expect.objectContaining({
+        targetCapable: true,
+      }));
+      expect(getArtifactTypeMetadata(config, 'e2e_test')).toEqual(expect.objectContaining({
+        targetCapable: true,
+      }));
+
+      // Custom type without target should NOT be targetCapable
+      // (Add a context-only type to verify)
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+  runbook:
+    paths: ["artifacts/runbooks/**/*.md"]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      const config2 = await loadConfig(root);
+      expect(getArtifactTypeMetadata(config2, 'runbook')).toEqual(expect.objectContaining({
+        targetCapable: false,
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces ARTIFACT_PATH_OVERLAP diagnostic when multiple types match the same file', async () => {
+    const root = await fixtureRepo('path-overlap');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  overlap_type:
+    paths: ["artifacts/decisions/**/*.md"]
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      expect(issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'ARTIFACT_PATH_OVERLAP',
+          severity: 'warning',
+          path: expect.stringContaining('D-FRONTMATTER-01'),
+        }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('path overlap selects the more specific type for the file', async () => {
+    const root = await fixtureRepo('path-overlap-specificity');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  specific_type:
+    paths: ["artifacts/decisions/D-FRONTMATTER-01.md"]
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // More specific type (exact path) should win
+      const node = graph.nodes.find((n) => n.path === 'artifacts/decisions/D-FRONTMATTER-01.md');
+      expect(node).toBeDefined();
+      expect(node!.type).toBe('specific_type');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('custom type runtime: generic Markdown parser', () => {
+  it('parses registered custom Markdown type into graph nodes with uid, status, and rawFrontmatter', async () => {
+    const root = await fixtureRepo('generic-md-parse');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    extraFields:
+      - name: version
+        type: string
+      - name: approved
+        type: boolean
+      - name: method
+        type: enum
+        enum: [GET, POST, PUT, DELETE]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+version: v1
+approved: true
+method: GET
+custom_note: "this should be preserved in rawFrontmatter"
+---
+
+# API-001: Order API
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // Node should exist with correct uid
+      const node = graph.nodes.find((n) => n.uid === 'api_contract:API-001');
+      expect(node).toBeDefined();
+      expect(node!.type).toBe('api_contract');
+      expect(node!.code).toBe('API-001');
+      expect(node!.title).toBe('Order API');
+      expect(node!.status).toBe('active');
+
+      // ExtraFields declared in config should be in attrs.indexedFields
+      expect(node!.attrs).toEqual(expect.objectContaining({
+        indexedFields: {
+          version: 'v1',
+          approved: true,
+          method: 'GET',
+        },
+      }));
+
+      // All raw frontmatter should be preserved in attrs.rawFrontmatter
+      expect(node!.attrs).toEqual(expect.objectContaining({
+        rawFrontmatter: expect.objectContaining({
+          id: 'API-001',
+          title: 'Order API',
+          status: 'active',
+          version: 'v1',
+          approved: true,
+          method: 'GET',
+          custom_note: 'this should be preserved in rawFrontmatter',
+        }),
+      }));
+
+      // Parsing is valid; an unconnected custom artifact intentionally receives an isolation warning.
+      const issues = validateGraph(graph, config);
+      const apiIssues = issues.filter((i) => i.path.includes('API-001'));
+      expect(apiIssues.filter((i) => i.severity === 'error')).toEqual([]);
+      expect(apiIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'CUSTOM_ARTIFACT_ISOLATED', severity: 'warning' }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces ARTIFACT_ID_MISSING diagnostic for custom type without id in frontmatter', async () => {
+    const root = await fixtureRepo('generic-md-missing-id');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/no-id.md', `---
+title: Missing ID Contract
+status: active
+---
+
+# Missing ID
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      // Should produce ARTIFACT_ID_MISSING diagnostic
+      expect(issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'ARTIFACT_ID_MISSING',
+          severity: 'warning',
+          path: expect.stringContaining('no-id.md'),
+        }),
+      ]));
+
+      // Should NOT create a node for the file
+      expect(graph.nodes.find((n) => n.path.includes('no-id.md'))).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces INVALID_ID diagnostic for custom type with id not matching idPattern', async () => {
+    const root = await fixtureRepo('generic-md-invalid-id');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/bad-id.md', `---
+id: BAD-FORMAT
+title: Bad ID Format
+status: active
+---
+
+# BAD-FORMAT
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      // Should produce INVALID_ID diagnostic
+      expect(issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          code: 'INVALID_ID',
+          severity: 'error',
+          message: expect.stringContaining('BAD-FORMAT'),
+          path: expect.stringContaining('bad-id.md'),
+        }),
+      ]));
+
+      // Node should still be created (invalid ID is a warning, not fatal)
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:BAD-FORMAT')).toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces EXTRA_FIELD_TYPE_MISMATCH diagnostic for type mismatches on declared extraFields', async () => {
+    const root = await fixtureRepo('generic-md-extra-fields-mismatch');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    extraFields:
+      - name: version
+        type: string
+      - name: approved
+        type: boolean
+      - name: method
+        type: enum
+        enum: [GET, POST, PUT, DELETE]
+      - name: port
+        type: number
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/API-002.md', `---
+id: API-002
+title: Bad Types Contract
+status: active
+version: 123
+approved: "yes"
+method: PATCH
+port: "not-a-number"
+---
+
+# API-002: Bad Types
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      // Should produce EXTRA_FIELD_TYPE_MISMATCH for each mismatch
+      const mismatchIssues = issues.filter((i) => i.code === 'EXTRA_FIELD_TYPE_MISMATCH');
+      expect(mismatchIssues.length).toBeGreaterThanOrEqual(3);
+
+      // version expects string but got number
+      expect(mismatchIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining('version'),
+          path: expect.stringContaining('API-002'),
+        }),
+      ]));
+      // approved expects boolean but got string
+      expect(mismatchIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining('approved'),
+        }),
+      ]));
+      // method expects enum but got value not in enum list
+      expect(mismatchIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining('method'),
+        }),
+      ]));
+      // port expects number but got string
+      expect(mismatchIssues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          message: expect.stringContaining('port'),
+        }),
+      ]));
+
+      // Node should still be created
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:API-002')).toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('existing core parsers still work unchanged after generic parser is added', async () => {
+    const root = await fixtureRepo('core-parsers-unchanged');
+    try {
+      const graph = await scanArtifacts(root);
+
+      // Core types still parsed by specialized parsers
+      expect(graph.nodes.find((n) => n.uid === 'feature:A1')).toBeDefined();
+      expect(graph.nodes.find((n) => n.uid === 'decision:D-TOOL-02')).toBeDefined();
+      expect(graph.nodes.find((n) => n.uid === 'scenario:S-01')).toBeDefined();
+      expect(graph.nodes.find((n) => n.uid === 'design:design-skill-import')).toBeDefined();
+      expect(graph.nodes.find((n) => n.uid === 'entity:E-001')).toBeDefined();
+
+      // Edges still built correctly
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({ from: 'feature:A1', to: 'scenario:S-01', kind: 'covers' }),
+      );
+      expect(graph.edges).toContainEqual(
+        expect.objectContaining({ from: 'scenario:S-01', to: 'feature:A1', kind: 'references' }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('ArtifactGraph backward compatibility', () => {
+  it('allows old-style graph literal without diagnostics field and validateGraph handles it gracefully', () => {
+    // Old consumers may construct ArtifactGraph without the diagnostics field.
+    // The interface must remain assignable from this shape.
+    const oldStyleGraph: ArtifactGraph = {
+      nodes: [],
+      edges: [],
+      generatedAt: '2024-01-01T00:00:00.000Z',
+      // intentionally no diagnostics field
+    };
+
+    // validateGraph must not throw when diagnostics is absent
+    const issues = validateGraph(oldStyleGraph);
+    expect(Array.isArray(issues)).toBe(true);
+
+    // buildGraph always produces diagnostics, so new graphs are also valid
+    const newStyleGraph = buildGraph([], []);
+    expect(newStyleGraph.diagnostics).toEqual([]);
+    const newIssues = validateGraph(newStyleGraph);
+    expect(Array.isArray(newIssues)).toBe(true);
+  });
+});
+
+describe('resolveArtifactTypeName', () => {
+  it('resolves exact type name', () => {
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'feature')).toBe('feature');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'scenario')).toBe('scenario');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'decision')).toBe('decision');
+  });
+
+  it('resolves explicit alias to canonical type name', () => {
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'decisions')).toBe('decision');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'adr')).toBe('decision');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'prd-feature')).toBe('feature');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'prd_features')).toBe('feature');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'scenarios')).toBe('scenario');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'scenario-script')).toBe('scenario');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'design-spec')).toBe('design');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'design_docs')).toBe('design');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'e2e-test')).toBe('e2e_test');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'e2e_tests')).toBe('e2e_test');
+  });
+
+  it('does NOT auto-convert hyphens to underscores or vice versa', () => {
+    // e2e_test is a type, but e2e-test is an alias — both work because alias is explicit
+    // But a non-existent hybrid should NOT work
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'e2e_test')).toBe('e2e_test');
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'e2e-test')).toBe('e2e_test');
+
+    // feature-scenario is not a type or alias
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'feature-scenario')).toBeUndefined();
+
+    // Random strings should not resolve
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, 'nonexistent')).toBeUndefined();
+    expect(resolveArtifactTypeName(DEFAULT_SCHEMA, '')).toBeUndefined();
+  });
+
+  it('resolves custom type from config with aliases', async () => {
+    const root = await fixtureRepo('resolve-type-custom');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract, apiContract]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      const config = await loadConfig(root);
+      expect(resolveArtifactTypeName(config, 'api_contract')).toBe('api_contract');
+      expect(resolveArtifactTypeName(config, 'api-contract')).toBe('api_contract');
+      expect(resolveArtifactTypeName(config, 'apiContract')).toBe('api_contract');
+      // Close but wrong — no auto conversion
+      expect(resolveArtifactTypeName(config, 'api contract')).toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('custom type runtime: dynamic related_* edges from frontmatter', () => {
+  it('produces references edges for related_<core-type> fields on custom types', async () => {
+    const root = await fixtureRepo('custom-related-core');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+    aliases: [features]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+    aliases: [decisions, adr]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/prd/features/ACA11.md', `---
+id: ACA11
+title: Extended Artifact Catalog
+status: active
+design_docs: [design-aca11]
+---
+# ACA11
+`);
+      await write(root, 'artifacts/design/design-aca11.md', `---
+title: ACA11 Design
+related_features: [ACA11]
+---
+# Design ACA11
+`);
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_features: [ACA11]
+related_decisions: [D-TOOL-02]
+---
+
+# API-001: Order API
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // related_features (alias "features") should create references edge from api_contract to feature
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'feature:ACA11',
+        kind: 'references',
+        source: 'frontmatter',
+      }));
+
+      // related_decisions (alias "decisions") should create references edge to decision
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'decision:D-TOOL-02',
+        kind: 'references',
+        source: 'frontmatter',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces references edges for related_<custom-type> fields between custom types', async () => {
+    const root = await fixtureRepo('custom-related-custom');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+  data_contract:
+    paths: ["artifacts/contracts/data/**/*.md"]
+    target: true
+  db_migration:
+    paths: ["artifacts/migrations/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  data_contract: "^DATA-\\\\d+$"
+  db_migration: "^MIG-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+---
+# API-001
+`);
+      await write(root, 'artifacts/contracts/data/DATA-001.md', `---
+id: DATA-001
+title: Order Data
+status: active
+---
+# DATA-001
+`);
+      await write(root, 'artifacts/migrations/MIG-001.md', `---
+id: MIG-001
+title: Create orders table
+status: active
+related_data_contract: [DATA-001]
+related_api_contract: [API-001]
+---
+# MIG-001
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // related_data_contract matches type name exactly → edge
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'db_migration:MIG-001',
+        to: 'data_contract:DATA-001',
+        kind: 'references',
+        source: 'frontmatter',
+      }));
+
+      // related_api_contract matches type name exactly → edge
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'db_migration:MIG-001',
+        to: 'api_contract:API-001',
+        kind: 'references',
+        source: 'frontmatter',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('resolves related_* aliases to canonical types for edge creation', async () => {
+    const root = await fixtureRepo('custom-related-alias');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+    aliases: [prd-feature, prd_features]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+    aliases: [adr]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/prd/features/ACA11.md', `---
+id: ACA11
+title: Extended
+status: active
+---
+# ACA11
+`);
+      await write(root, 'artifacts/decisions/D-TOOL-02.md', `---
+id: D-TOOL-02
+title: Decision
+status: active
+---
+# D-TOOL-02
+`);
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_prd_features: [ACA11]
+related_adr: [D-TOOL-02]
+---
+
+# API-001
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // related_prd_features uses alias "prd-feature" → feature
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'feature:ACA11',
+        kind: 'references',
+      }));
+
+      // related_adr uses alias "adr" → decision
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'decision:D-TOOL-02',
+        kind: 'references',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects related_* with non-existent type suffix (no edge, no crash)', async () => {
+    const root = await fixtureRepo('custom-related-invalid');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+    aliases: [features]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_nonexistent_type: [X-001]
+related_features: [ACA999]
+---
+
+# API-001
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // related_nonexistent_type should NOT produce any edge (unknown type)
+      expect(graph.edges).not.toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: expect.stringContaining('X-001'),
+      }));
+
+      // related_features (alias "features") with valid type but nonexistent target ID still creates a dangling edge
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'feature:ACA999',
+        kind: 'references',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects related_* with target ID that fails the target type idPattern (no edge, INVALID_ID diagnostic)', async () => {
+    const root = await fixtureRepo('custom-related-invalid-target-id');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+  data_contract:
+    paths: ["artifacts/contracts/data/**/*.md"]
+    target: true
+    aliases: [data-contract]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  data_contract: "^DATA-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+related_feature: [ACA11]
+related_data_contract: [NOT-DATA-FORMAT]
+related_data-contract: [DATA-001]
+---
+
+# API-001
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // Legal relation: related_feature → feature:ACA11 (ACA11 matches ^[A-Z]{1,4}\\d+$)
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'feature:ACA11',
+        kind: 'references',
+        source: 'frontmatter',
+      }));
+
+      // Legal relation: related_data-contract (alias) → data_contract:DATA-001
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'data_contract:DATA-001',
+        kind: 'references',
+        source: 'frontmatter',
+      }));
+
+      // Illegal relation: NOT-DATA-FORMAT does not match ^DATA-\\d+$ → no edge
+      expect(graph.edges).not.toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'data_contract:NOT-DATA-FORMAT',
+      }));
+
+      // Scan diagnostics should contain INVALID_ID for the illegal target
+      const invalidTargetIssues = graph.diagnostics?.filter((d) =>
+        d.code === 'INVALID_ID'
+        && d.path.includes('API-001.md')
+        && d.message.includes('NOT-DATA-FORMAT')
+        && d.message.includes('data_contract')
+      ) ?? [];
+      expect(invalidTargetIssues.length).toBeGreaterThanOrEqual(1);
+      // Verify the diagnostic has path and line
+      expect(invalidTargetIssues[0]).toEqual(expect.objectContaining({
+        path: expect.stringContaining('API-001.md'),
+        line: expect.any(Number),
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('custom type runtime: dynamic standalone @type ID traceability', () => {
+  it('creates implements edges for dynamic @<custom-type> <ID> in Java files', async () => {
+    const root = await fixtureRepo('custom-traceability-java');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await mkdir(join(root, 'src'), { recursive: true });
+      await mkdir(join(root, 'artifacts/prd/features'), { recursive: true });
+      await mkdir(join(root, 'artifacts/contracts/api'), { recursive: true });
+      await write(root, 'artifacts/prd/features/ACA11.md', `---
+id: ACA11
+title: Extended Catalog
+status: active
+---
+# ACA11
+`);
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+---
+# API-001
+`);
+      // Java file with standalone traceability comments for a dynamic type and a core type.
+      await write(root, 'src/OrderController.java', `package com.example;
+
+// @api_contract API-001
+// @feature ACA11
+public class OrderController {
+    // trailing comment @api_contract API-999
+    public void createOrder() {}
+}
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // The dynamic custom-type tag should create an implements edge.
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderController.java',
+        to: 'api_contract:API-001',
+        kind: 'implements',
+        source: 'test-comment',
+      }));
+
+      // The core feature tag should still work.
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderController.java',
+        to: 'feature:ACA11',
+        kind: 'implements',
+        source: 'test-comment',
+      }));
+
+      // Trailing comment (not standalone) should NOT create edge
+      const trailingEdges = graph.edges.filter((e) =>
+        e.from === 'implementation:src/OrderController.java'
+        && e.to === 'api_contract:API-999'
+      );
+      expect(trailingEdges).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('creates edges for dynamic @<type> using alias in source code', async () => {
+    const root = await fixtureRepo('custom-traceability-alias');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await mkdir(join(root, 'src'), { recursive: true });
+      await mkdir(join(root, 'artifacts/prd/features'), { recursive: true });
+      await mkdir(join(root, 'artifacts/contracts/api'), { recursive: true });
+      await write(root, 'artifacts/prd/features/ACA11.md', `---
+id: ACA11
+title: Extended Catalog
+status: active
+---
+# ACA11
+`);
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+---
+# API-001
+`);
+      // Use alias "api-contract" instead of "api_contract"
+      await write(root, 'src/OrderService.java', `package com.example;
+
+// @api-contract API-001
+// @feature ACA11
+public class OrderService {}
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // @-api-contract (alias) should resolve to api_contract and create edge
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderService.java',
+        to: 'api_contract:API-001',
+        kind: 'implements',
+        source: 'test-comment',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects @<type> with ID not matching idPattern', async () => {
+    const root = await fixtureRepo('custom-traceability-invalid-id');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await mkdir(join(root, 'src'), { recursive: true });
+      // No api_contract node needed — just testing tag validation
+      await write(root, 'src/BadController.java', `package com.example;
+
+// @api_contract BAD-FORMAT
+public class BadController {}
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // ID "BAD-FORMAT" doesn't match ^API-\d+$, so no edge should be created
+      expect(graph.edges).not.toContainEqual(expect.objectContaining({
+        from: 'implementation:src/BadController.java',
+        to: 'api_contract:BAD-FORMAT',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('excludes block comments, string literals, and trailing comments for dynamic @type tags', async () => {
+    const root = await fixtureRepo('custom-traceability-exclusions');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await mkdir(join(root, 'src'), { recursive: true });
+      await write(root, 'src/ExclusionTest.java', `package com.example;
+
+/* @api_contract API-001 */
+String s = "// @api_contract API-002";
+public void test() {} // @api_contract API-003
+// @api_contract API-004
+public class ExclusionTest {}
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // Only the standalone line comment on line 7 should produce an edge
+      const edges = graph.edges.filter((e) =>
+        e.from === 'test:src/ExclusionTest.java'
+        && e.to.startsWith('api_contract:')
+      );
+
+      expect(edges).toContainEqual(expect.objectContaining({
+        to: 'api_contract:API-004',
+      }));
+
+      // Block comment (line 3) should NOT produce edge
+      expect(edges).not.toContainEqual(expect.objectContaining({ to: 'api_contract:API-001' }));
+      // String literal (line 4) should NOT produce edge
+      expect(edges).not.toContainEqual(expect.objectContaining({ to: 'api_contract:API-002' }));
+      // Trailing comment (line 5) should NOT produce edge
+      expect(edges).not.toContainEqual(expect.objectContaining({ to: 'api_contract:API-003' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('preserves existing core tag behavior alongside dynamic custom tags', async () => {
+    const root = await fixtureRepo('custom-traceability-mixed');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+  test:
+    paths: ["src/**/*.ts"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  feature: "^[A-Z]{1,4}\\\\d+$"
+  scenario: "^S-\\\\d+[a-z]?$"
+  test: "^.+\\\\.java$"
+  decision: "^D-[A-Z]+-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await mkdir(join(root, 'src'), { recursive: true });
+      await mkdir(join(root, 'artifacts/prd/features'), { recursive: true });
+      await mkdir(join(root, 'artifacts/scenarios'), { recursive: true });
+      await mkdir(join(root, 'artifacts/decisions'), { recursive: true });
+      await mkdir(join(root, 'artifacts/contracts/api'), { recursive: true });
+      await write(root, 'artifacts/prd/features/ACA11.md', `---
+id: ACA11
+title: Extended
+status: active
+---
+# ACA11
+`);
+      await write(root, 'artifacts/scenarios/S-25.md', `## S-25: Mixed tags
+
+**关联功能**: ACA11
+`);
+      await write(root, 'artifacts/decisions/D-TOOL-10.md', `---
+id: D-TOOL-10
+title: Mixed Decision
+status: active
+---
+# D-TOOL-10
+`);
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+---
+# API-001
+`);
+      // TypeScript test file with mixed core and dynamic tags
+      await write(root, 'src/order.test.ts', `// @scenario S-25 @feature ACA11 @api_contract API-001 @decision D-TOOL-10
+describe('order', () => {});
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // All four tag types should produce edges on the same line
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'test:src/order.test.ts',
+        to: 'scenario:S-25',
+        kind: 'verifies',
+        source: 'test-comment',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'test:src/order.test.ts',
+        to: 'feature:ACA11',
+        kind: 'verifies',
+        source: 'test-comment',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'test:src/order.test.ts',
+        to: 'api_contract:API-001',
+        kind: 'verifies',
+        source: 'test-comment',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'test:src/order.test.ts',
+        to: 'decision:D-TOOL-10',
+        kind: 'verifies',
+        source: 'test-comment',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('produces INVALID_TRACEABILITY_TAG diagnostic for unknown @type in source code', async () => {
+    const root = await fixtureRepo('custom-traceability-unknown-type');
+    try {
+      await writeFile(
+        join(root, 'artifact-graph.config.yaml'),
+        `types:
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+statuses: [planned, active, done, deprecated, accepted]
+`,
+      );
+      await mkdir(join(root, 'src'), { recursive: true });
+      await write(root, 'src/UnknownType.java', `// @nonexistent X-001
+public class UnknownType {}
+`);
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // No edge should be created
+      expect(graph.edges).not.toContainEqual(expect.objectContaining({
+        to: expect.stringContaining('X-001'),
+      }));
+
+      // Should produce an invalid comment diagnostic
+      const node = graph.nodes.find((n) => n.uid === 'implementation:src/UnknownType.java');
+      expect(node).toBeDefined();
+      const invalidComments = node!.attrs?.invalidTraceabilityComments;
+      expect(Array.isArray(invalidComments)).toBe(true);
+      expect(invalidComments.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('custom type runtime: CUSTOM_ARTIFACT_ISOLATED warning', () => {
+  it('produces CUSTOM_ARTIFACT_ISOLATED for isolated custom artifact with no edges', async () => {
+    const root = join(tmpdir(), `artifact-graph-isolated-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    try {
+      await write(root, 'artifact-graph.config.yaml', `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+      await write(root, 'artifacts/contracts/api/API-999.md', `---
+id: API-999
+title: Isolated API contract
+status: active
+---
+# API-999
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:API-999')).toBeDefined();
+      expect(issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({ code: 'CUSTOM_ARTIFACT_ISOLATED', node: 'api_contract:API-999', severity: 'warning' }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not produce CUSTOM_ARTIFACT_ISOLATED for connected custom artifact', async () => {
+    const root = join(tmpdir(), `artifact-graph-connected-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    try {
+      await write(root, 'artifact-graph.config.yaml', `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+    aliases: [features]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+      await write(root, 'artifacts/prd/features/ACA11.md', `---
+id: ACA11
+title: Extended catalog
+status: active
+scenarios: []
+decisions: []
+design_docs: []
+---
+# ACA11
+`);
+      await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Connected API contract
+status: active
+related_features: [ACA11]
+---
+# API-001
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:API-001')).toBeDefined();
+      expect(issues.filter((i) => i.code === 'CUSTOM_ARTIFACT_ISOLATED')).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not produce CUSTOM_ARTIFACT_ISOLATED for core types without edges', async () => {
+    const root = await fixtureRepo('no-isolated-core');
+    try {
+      const graph = await scanArtifacts(root);
+      const issues = validateGraph(graph);
+      // Core types (feature, scenario, decision, etc.) should never produce this warning
+      expect(issues.filter((i) => i.code === 'CUSTOM_ARTIFACT_ISOLATED')).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('custom type runtime: enterprise Java fixture TC-001–TC-006', () => {
+  async function enterpriseJavaFixture(name: string): Promise<string> {
+    const root = join(tmpdir(), `artifact-graph-enterprise-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+
+    await write(root, 'artifact-graph.config.yaml', `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+    aliases: [features]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  decision:
+    paths: ["artifacts/decisions/**/*.md"]
+    aliases: [decisions]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract]
+    extraFields:
+      - name: method
+        type: string
+        enum: [GET, POST, PUT, DELETE, PATCH]
+      - name: version
+        type: string
+  data_contract:
+    paths: ["artifacts/contracts/data/**/*.md"]
+    target: true
+    aliases: [data-contract]
+    extraFields:
+      - name: format
+        type: string
+  db_migration:
+    paths: ["artifacts/migrations/**/*.md"]
+    aliases: [database_migration, migration]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+  data_contract: "^DATA-\\\\d+$"
+  db_migration: "^MIG-[\\\\w-]+$"
+  feature: "^[A-Z]+\\\\d+$"
+  decision: "^D-[A-Z]+-\\\\d+$"
+  scenario: "^S-\\\\d+[a-z]?$"
+  test: "^.+\\\\.java$"
+statuses: [planned, active, done, deprecated, accepted]
+`);
+
+    // Feature
+    await write(root, 'artifacts/prd/features/F001.md', `---
+id: F001
+title: Order Management
+status: active
+scenarios: [S-001]
+decisions: [D-JAVA-001]
+design_docs: [design-order]
+---
+# F001: Order Management
+`);
+    // Scenario
+    await write(root, 'artifacts/scenarios/batch-1.md', `## S-001: Create Order
+
+**关联功能**: F001
+**关联决策**: D-JAVA-001
+`);
+    // Decision
+    await write(root, 'artifacts/decisions/D-JAVA-001.md', `---
+id: D-JAVA-001
+title: Use Spring Boot 3.2
+status: accepted
+related_features: [F001]
+related_scenarios: [S-001]
+---
+# D-JAVA-001: Use Spring Boot 3.2
+`);
+    // Design
+    await write(root, 'artifacts/design/design-order.md', `---
+title: Order Service Design
+related_features: [F001]
+related_scenarios: [S-001]
+---
+# Order Service Design
+`);
+    // API contract
+    await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Create Order API
+status: active
+method: POST
+version: v1
+related_features: [F001]
+related_decisions: [D-JAVA-001]
+---
+# API-001: Create Order API
+`);
+    // Data contract
+    await write(root, 'artifacts/contracts/data/DATA-001.md', `---
+id: DATA-001
+title: Order Data Model
+status: active
+format: JSON
+related_features: [F001]
+related_api_contract: [API-001]
+---
+# DATA-001: Order Data Model
+`);
+    // DB migration
+    await write(root, 'artifacts/migrations/MIG-20260709-001.md', `---
+id: MIG-20260709-001
+title: Create orders table
+status: active
+related_data_contract: [DATA-001]
+---
+# MIG-20260709-001: Create orders table
+`);
+    // Java source files with traceability comments
+    await write(root, 'src/OrderController.java', `// @api_contract API-001
+// @feature F001
+public class OrderController {}
+`);
+    await write(root, 'src/OrderService.java', `// @data_contract DATA-001
+public class OrderService {}
+`);
+    await write(root, 'src/OrderControllerTest.java', `// @api_contract API-001
+public class OrderControllerTest {}
+`);
+
+    return root;
+  }
+
+  // TC-001: P0 Generic Markdown parser
+  it('TC-001: scans custom types into graph nodes', async () => {
+    const root = await enterpriseJavaFixture('tc001');
+    try {
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:API-001')).toBeDefined();
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:API-001')!.title).toBe('Create Order API');
+      expect(graph.nodes.find((n) => n.uid === 'api_contract:API-001')!.status).toBe('active');
+      expect(graph.nodes.find((n) => n.uid === 'data_contract:DATA-001')).toBeDefined();
+      expect(graph.nodes.find((n) => n.uid === 'db_migration:MIG-20260709-001')).toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // TC-002: P1 Dynamic target, context, and packet
+  it('TC-002: resolves context and packet for custom target', async () => {
+    const root = await enterpriseJavaFixture('tc002');
+    try {
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      const context = resolveArtifactContext(graph, { target: { type: 'api_contract', id: 'API-001' } });
+      expect(context.target.type).toBe('api_contract');
+      expect(context.target.id).toBe('API-001');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // TC-003: P2 Related relations and implementation traceability
+  it('TC-003: builds related_* and implementation edges for custom types', async () => {
+    const root = await enterpriseJavaFixture('tc003');
+    try {
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // api_contract → feature references
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'feature:F001',
+        kind: 'references',
+      }));
+      // data_contract → api_contract references
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'data_contract:DATA-001',
+        to: 'api_contract:API-001',
+        kind: 'references',
+      }));
+      // db_migration → data_contract references
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'db_migration:MIG-20260709-001',
+        to: 'data_contract:DATA-001',
+        kind: 'references',
+      }));
+      // Ordinary Java sources implement artifacts.
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderController.java',
+        to: 'api_contract:API-001',
+        kind: 'implements',
+      }));
+      // Java @-data_contract traceability edge
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderService.java',
+        to: 'data_contract:DATA-001',
+        kind: 'implements',
+      }));
+      // Java test classes verify artifacts.
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'test:src/OrderControllerTest.java',
+        to: 'api_contract:API-001',
+        kind: 'verifies',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // TC-004: P3 extraFields
+  it('TC-004: indexes extraFields declared in config', async () => {
+    const root = await enterpriseJavaFixture('tc004');
+    try {
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      const apiNode = graph.nodes.find((n) => n.uid === 'api_contract:API-001');
+      expect(apiNode).toBeDefined();
+      expect(apiNode!.attrs).toEqual(expect.objectContaining({
+        indexedFields: expect.objectContaining({
+          method: 'POST',
+          version: 'v1',
+        }),
+      }));
+
+      const dataNode = graph.nodes.find((n) => n.uid === 'data_contract:DATA-001');
+      expect(dataNode!.attrs).toEqual(expect.objectContaining({
+        indexedFields: expect.objectContaining({
+          format: 'JSON',
+        }),
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // TC-005: P4 validate and version-lock
+  it('TC-005: validate produces no error for valid enterprise fixture; CUSTOM_ARTIFACT_ISOLATED absent for connected types', async () => {
+    const root = await enterpriseJavaFixture('tc005');
+    try {
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      const errors = issues.filter((i) => i.severity === 'error');
+      // Connected custom types should NOT produce CUSTOM_ARTIFACT_ISOLATED
+      expect(issues.filter((i) => i.code === 'CUSTOM_ARTIFACT_ISOLATED')).toEqual([]);
+      // No validation errors expected for a clean fixture
+      expect(errors).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // TC-006: P5 Enterprise Java integration — full chain
+  it('TC-006: full enterprise Java chain with context, validate, and graph', async () => {
+    const root = await enterpriseJavaFixture('tc006');
+    try {
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+
+      // All expected node types present
+      expect(graph.nodes.filter((n) => n.type === 'api_contract').length).toBe(1);
+      expect(graph.nodes.filter((n) => n.type === 'data_contract').length).toBe(1);
+      expect(graph.nodes.filter((n) => n.type === 'db_migration').length).toBe(1);
+
+      // Full chain: db_migration → data_contract → api_contract → feature
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'db_migration:MIG-20260709-001',
+        to: 'data_contract:DATA-001',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'data_contract:DATA-001',
+        to: 'api_contract:API-001',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'api_contract:API-001',
+        to: 'feature:F001',
+      }));
+
+      // Java traceability edges — src/*.java are implementation sources, not test files
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderController.java',
+        to: 'api_contract:API-001',
+        kind: 'implements',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/OrderService.java',
+        to: 'data_contract:DATA-001',
+        kind: 'implements',
+      }));
+
+      // Validate clean
+      const issues = validateGraph(graph, config);
+      const errors = issues.filter((i) => i.severity === 'error');
+      expect(errors).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads the committed enterprise Java fixture and distinguishes implementation from test evidence', async () => {
+    const root = join(import.meta.dirname, 'fixtures/enterprise-java-custom-types');
+    const config = await loadConfig(root);
+    const graph = await scanArtifacts(root, config);
+
+    expect(graph.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        from: 'implementation:src/OrderController.java',
+        to: 'api_contract:API-001',
+        kind: 'implements',
+      }),
+      expect.objectContaining({
+        from: 'test:src/OrderControllerTest.java',
+        to: 'api_contract:API-001',
+        kind: 'verifies',
+      }),
+      expect.objectContaining({
+        from: 'db_migration:MIG-001',
+        to: 'data_contract:DATA-001',
+        kind: 'references',
+      }),
+    ]));
+    expect(validateGraph(graph, config).filter((issue) => issue.severity === 'error')).toEqual([]);
+  });
+
+  // Performance benchmark: 1000 generic Markdown artifacts < 2000ms
+  it('scans 1000 generic Markdown artifacts in under 2000ms', async () => {
+    const root = join(tmpdir(), `artifact-graph-perf-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    try {
+      const { cpus, arch, platform } = await import('node:os');
+      const { version } = await import('node:process');
+
+      await write(root, 'artifact-graph.config.yaml', `types:
+  generic_item:
+    paths: ["artifacts/items/**/*.md"]
+idPatterns:
+  generic_item: "^ITEM-\\\\d+$"
+`);
+
+      // Generate 1000 generic Markdown files
+      await mkdir(join(root, 'artifacts/items'), { recursive: true });
+      const filePromises: Promise<void>[] = [];
+      for (let i = 0; i < 1000; i++) {
+        filePromises.push(write(root, `artifacts/items/ITEM-${String(i).padStart(4, '0')}.md`, `---
+id: ITEM-${String(i).padStart(4, '0')}
+title: Generic Item ${i}
+status: active
+---
+# Item ${i}
+`));
+      }
+      await Promise.all(filePromises);
+
+      const config = await loadConfig(root);
+
+      const start = performance.now();
+      const graph = await scanArtifacts(root, config);
+      const elapsed = performance.now() - start;
+
+      const cpuInfo = cpus();
+      console.log(`\n[Performance Benchmark]`);
+      console.log(`  Node.js: ${version}`);
+      console.log(`  Platform: ${platform()} ${arch()}`);
+      console.log(`  CPU: ${cpuInfo[0]?.model ?? 'unknown'} (${cpuInfo.length} cores)`);
+      console.log(`  1000 generic Markdown scan: ${elapsed.toFixed(1)}ms`);
+      console.log(`  Nodes: ${graph.nodes.length}, Edges: ${graph.edges.length}`);
+
+      expect(graph.nodes.length).toBe(1000);
+      expect(elapsed).toBeLessThan(2000);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

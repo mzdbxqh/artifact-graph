@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -625,5 +625,158 @@ scenarios: [S-01]
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('graph-relevant unstaged changes');
     expect(result.stderr).toContain('artifacts/prd/features/A1-scan.md');
+  });
+});
+
+describe('versioned traceability: custom type edges', () => {
+  async function customTypeRepo(name: string): Promise<string> {
+    const root = join(tmpdir(), `artifact-graph-vt-custom-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(
+      root,
+      'artifact-graph.config.yaml',
+      `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+  test:
+    paths: ["src/**/*.java"]
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`,
+    );
+    await write(
+      root,
+      'artifacts/prd/features/F-001.md',
+      `---
+id: F-001
+title: Order Management
+status: active
+---
+# F-001
+`,
+    );
+    await write(
+      root,
+      'artifacts/contracts/api/API-001.md',
+      `---
+id: API-001
+title: Create Order API
+status: active
+related_features: [F-001]
+---
+# API-001
+`,
+    );
+    await write(
+      root,
+      'src/OrderController.java',
+      `// @api_contract API-001
+// @feature F-001
+public class OrderController {}
+`,
+    );
+    return root;
+  }
+
+  it('detects missing_lock for custom type verifies edge', async () => {
+    const root = await customTypeRepo('custom-missing');
+    try {
+      const audit = await auditVersionLock(root);
+      expect(audit.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          status: 'missing_lock',
+          edgeId: expect.stringContaining('api_contract:API-001'),
+        }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('bootstraps and audits custom type implementation edges', async () => {
+    const root = await customTypeRepo('custom-bootstrap');
+    try {
+      const lock = await bootstrapVersionLock(root);
+
+      // Java .java files are classified as 'code' (not test), so lock kind is 'implements'
+      expect(lock.locks.some((entry) => (
+        entry.edgeId.includes('OrderController.java')
+        && entry.edgeId.includes('api_contract:API-001')
+        && entry.kind === 'implements'
+      ))).toBe(true);
+
+      const audit = await auditVersionLock(root);
+      expect(audit.fresh).toBe(lock.locks.length);
+      expect(audit.issues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports artifact_changed when custom type artifact changes after lock update', async () => {
+    const root = await customTypeRepo('custom-artifact-changed');
+    try {
+      await bootstrapVersionLock(root);
+      await write(
+        root,
+        'artifacts/contracts/api/API-001.md',
+        `---
+id: API-001
+title: Create Order API v2
+status: active
+related_features: [F-001]
+---
+# API-001 v2
+`,
+      );
+
+      const audit = await auditVersionLock(root);
+      expect(audit.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          status: 'artifact_changed',
+          edgeId: expect.stringContaining('api_contract:API-001'),
+        }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports orphan_lock when custom type verifies edge is removed', async () => {
+    const root = await customTypeRepo('custom-orphan');
+    try {
+      await bootstrapVersionLock(root);
+      // Remove the traceability comment from the Java file
+      await write(
+        root,
+        'src/OrderController.java',
+        `public class OrderController {}
+`,
+      );
+
+      const audit = await auditVersionLock(root);
+      expect(audit.issues).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          status: 'orphan_lock',
+          edgeId: expect.stringContaining('api_contract:API-001'),
+        }),
+      ]));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('refreshes custom type locks with --all mode', async () => {
+    const root = await customTypeRepo('custom-refresh');
+    try {
+      const refresh = await refreshVersionLock(root, { all: true });
+      expect(refresh.addedLocks.some((edgeId) => edgeId.includes('api_contract:API-001'))).toBe(true);
+      expect(refresh.postAudit.issues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });

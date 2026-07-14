@@ -37,6 +37,21 @@ export interface ValidationIssue {
   line: number;
 }
 
+interface RelationOccurrence {
+  field: string;
+  targetType: string;
+  target: string;
+  path: string;
+  line: number;
+  raw?: string;
+}
+
+export interface ArtifactExtraFieldSchema {
+  name: string;
+  type: 'string' | 'number' | 'boolean' | 'enum';
+  enum?: Array<string | number | boolean>;
+}
+
 export interface ArtifactTypeSchema {
   paths: string[];
   idPattern?: string;
@@ -44,6 +59,13 @@ export interface ArtifactTypeSchema {
   role?: ArtifactTypeRole;
   layer?: string;
   aliases?: string[];
+  target?: boolean;
+  extraFields?: ArtifactExtraFieldSchema[];
+}
+
+export interface ArtifactTarget {
+  type: string;
+  id: string;
 }
 
 export interface ArtifactEdgeRule {
@@ -96,24 +118,54 @@ export function getArtifactTypeMetadata(schema: ArtifactSchema, type: string): A
     ? definition.aliases.filter((alias): alias is string => typeof alias === 'string' && alias.trim().length > 0)
     : [];
 
+  // Explicit target flag takes precedence for custom types;
+  // legacy five core types retain their implicit targetCapable behavior.
+  const legacyCoreRoleMatch = isTargetArtifactType(type) && role === type;
+  const targetCapable = definition?.target === true || legacyCoreRoleMatch;
+
   return {
     type,
     displayName: definition?.displayName?.trim() || type,
     role,
     layer: definition?.layer?.trim() || 'context',
     aliases,
-    targetCapable: isTargetArtifactType(type) && role === type,
+    targetCapable,
   };
 }
 
-export function getTargetArtifactTypes(schema: ArtifactSchema = DEFAULT_SCHEMA): TargetArtifactType[] {
-  return TARGET_ARTIFACT_TYPES.filter((type) => getArtifactTypeMetadata(schema, type).targetCapable);
+export function getTargetArtifactTypes(schema: ArtifactSchema = DEFAULT_SCHEMA): string[] {
+  // Preserve the canonical order of legacy core types first,
+  // then append any additional config-driven target-capable types.
+  const legacy = TARGET_ARTIFACT_TYPES.filter((type) => getArtifactTypeMetadata(schema, type).targetCapable);
+  const extras = Object.keys(schema.types).filter(
+    (type) => getArtifactTypeMetadata(schema, type).targetCapable && !legacy.includes(type as TargetArtifactType),
+  );
+  return [...legacy, ...extras];
+}
+
+/**
+ * Resolve a token (which may be an exact type name or an explicit alias) to
+ * the canonical artifact type name. Returns `undefined` if no match.
+ *
+ * Strict matching only — no automatic hyphen/underscore conversion.
+ */
+export function resolveArtifactTypeName(schema: ArtifactSchema, token: string): string | undefined {
+  if (!token) return undefined;
+  // Exact type name match
+  if (schema.types[token]) return token;
+  // Explicit alias match
+  for (const [type, definition] of Object.entries(schema.types)) {
+    if (definition.aliases?.includes(token)) return type;
+  }
+  return undefined;
 }
 
 export interface ArtifactGraph {
   nodes: ArtifactNode[];
   edges: ArtifactEdge[];
   generatedAt: string;
+  /** Scan-time diagnostics. Optional for backward compatibility with consumers that build graph literals without this field. */
+  diagnostics?: ValidationIssue[];
 }
 
 export interface QueryOptions {
@@ -164,6 +216,8 @@ export interface ContextOptions {
   decision?: string;
   design?: string;
   e2e_test?: string;
+  /** Unified target (type + id) resolved from `--target <type>:<id>`. Additive — old fields preserved. */
+  target?: ArtifactTarget;
   mode?: ContextMode;
   maxPerCategory?: number;
 }
@@ -234,7 +288,7 @@ export async function loadConfig(root: string): Promise<ArtifactSchema> {
   };
 }
 
-export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[]): ArtifactGraph {
+export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics: ValidationIssue[] = []): ArtifactGraph {
   const graphNodes = nodes.map((node) => ({ ...node, uid: toUid(node.type, node.code) }));
   graphNodes.sort(compareNode);
   edges.sort(compareEdge);
@@ -252,6 +306,7 @@ export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEd
     nodes: graphNodes,
     edges: dedupedEdges,
     generatedAt: new Date(0).toISOString(),
+    diagnostics: diagnostics.sort((left, right) => left.code.localeCompare(right.code) || left.path.localeCompare(right.path) || left.line - right.line),
   };
 }
 
@@ -259,23 +314,33 @@ export async function scanArtifacts(root: string, schema?: ArtifactSchema): Prom
   const config = schema ?? await loadConfig(root);
   const nodes: Omit<ArtifactNode, 'uid'>[] = [];
   const edges: ArtifactEdge[] = [];
-  const scannedFiles = new Set<string>();
+  const scanDiagnostics: ValidationIssue[] = [];
+  const scannedFiles = new Map<string, string>(); // file → type that claimed it
 
   for (const [type, definition] of artifactTypeEntriesBySpecificity(config)) {
     const files = await findFiles(root, definition.paths);
     for (const file of files) {
       if (scannedFiles.has(file)) {
+        const existingType = scannedFiles.get(file)!;
+        scanDiagnostics.push(issue(
+          'ARTIFACT_PATH_OVERLAP',
+          `File ${file} matched by both ${existingType} and ${type}; using most specific type`,
+          file,
+          1,
+          { severity: 'warning' },
+        ));
         continue;
       }
-      scannedFiles.add(file);
+      scannedFiles.set(file, type);
       const raw = await readFile(join(root, file), 'utf-8');
-      const parsed = parseFile(type, file, raw);
+      const parsed = parseFile(type, file, raw, config);
       nodes.push(...parsed.nodes);
       edges.push(...parsed.edges);
+      scanDiagnostics.push(...parsed.diagnostics);
     }
   }
 
-  const graph = buildGraph(nodes, edges);
+  const graph = buildGraph(nodes, edges, scanDiagnostics);
   return resolveMatrixEdges(graph);
 }
 
@@ -409,6 +474,7 @@ export function validateGraph(graph: ArtifactGraph, schema: ArtifactSchema = DEF
 
   issues.push(...validateE2eTests(graph));
   issues.push(...validateE2eRegistry(graph));
+  issues.push(...validateScenarioPrdLinks(graph, schema));
   issues.push(...validateCodeCommentTraceabilityFormat(graph));
   issues.push(...validateCodeCommentScenarioFeatureConsistency(graph));
 
@@ -488,9 +554,185 @@ export function validateGraph(graph: ArtifactGraph, schema: ArtifactSchema = DEF
     issues.push(issue('CYCLE_DETECTED', `depends_on cycle detected: ${cycle.join(' -> ')}`, '', 1, { node: cycle[0] }));
   }
 
+  // Check for isolated custom artifacts (config-registered types without dedicated parsers and with no edges)
+  const defaultTypeKeys = new Set(Object.keys(DEFAULT_SCHEMA.types));
+  const specializedParserTypes = new Set([
+    'feature', 'scenario', 'entity', 'decision', 'test', 'design',
+    'e2e_test', 'e2e_registry',
+    'rule-golden-cases', 'test-strategy', 'traceability-matrix-v2',
+    'traceability-version-lock',
+    'interface_contracts', 'data_contracts', 'application_state_machines', 'error_model',
+    'domain-glossary', 'bounded-context-map', 'domain-invariants',
+    'generation-packet-spec',
+    'report-contracts', 'verification-fixtures', 'ui-flow-contracts',
+    'non-functional-budgets',
+    'implementation-blueprint',
+  ]);
+  const uidsWithEdges = new Set<string>();
+  for (const edge of graph.edges) {
+    uidsWithEdges.add(edge.from);
+    uidsWithEdges.add(edge.to);
+  }
+  for (const node of graph.nodes) {
+    if (defaultTypeKeys.has(node.type)) continue;
+    if (specializedParserTypes.has(node.type)) continue;
+    // Only flag types that are registered in the current schema (i.e. config-registered custom types)
+    if (!schema.types[node.type]) continue;
+    if (!uidsWithEdges.has(node.uid)) {
+      issues.push(issue(
+        'CUSTOM_ARTIFACT_ISOLATED',
+        `Custom artifact ${node.uid} has no incoming or outgoing traceability edges`,
+        node.path,
+        node.line,
+        { node: node.uid, severity: 'warning' },
+      ));
+    }
+  }
+
+  // Merge scan diagnostics from the graph
+  issues.push(...(graph.diagnostics ?? []));
+
   issues.sort((left, right) => left.code.localeCompare(right.code) || left.path.localeCompare(right.path) || left.line - right.line);
   return issues;
 }
+
+export function validateScenarioPrdLinks(graph: ArtifactGraph, schema: ArtifactSchema = DEFAULT_SCHEMA): ValidationIssue[] {
+  if (!schema.relationFields.scenario?.includes('关联功能') || !schema.relationFields.feature?.includes('scenarios')) {
+    return [];
+  }
+
+  const issues: ValidationIssue[] = [];
+  const featurePattern = new RegExp(schema.idPatterns.feature ?? DEFAULT_SCHEMA.idPatterns.feature);
+  const scenarioPattern = new RegExp(schema.idPatterns.scenario ?? DEFAULT_SCHEMA.idPatterns.scenario);
+  const scenarioNodes = graph.nodes.filter((node) => node.type === 'scenario');
+  const featureNodes = graph.nodes.filter((node) => node.type === 'feature');
+  const scenarioMap = new Map(scenarioNodes.map((node) => [node.uid, node]));
+  const featureMap = new Map(featureNodes.map((node) => [node.uid, node]));
+  const scenarioFeatureRefs = new Map<string, RelationOccurrence[]>();
+  const featureScenarioRefs = new Map<string, RelationOccurrence[]>();
+
+  for (const node of scenarioNodes) {
+    scenarioFeatureRefs.set(node.uid, relationOccurrences(node, '关联功能', 'feature'));
+    if (!scenarioPattern.test(node.code)) {
+      issues.push(issue('FORMAT_ERROR', `scenario ID ${node.code} does not match ${schema.idPatterns.scenario}`, node.path, node.line, { node: node.uid }));
+    }
+  }
+  for (const node of featureNodes) {
+    featureScenarioRefs.set(node.uid, relationOccurrences(node, 'scenarios', 'scenario'));
+    if (!featurePattern.test(node.code)) {
+      issues.push(issue('FORMAT_ERROR', `feature ID ${node.code} does not match ${schema.idPatterns.feature}`, node.path, node.line, { node: node.uid }));
+    }
+  }
+
+  for (const [scenarioUid, refs] of scenarioFeatureRefs) {
+    const node = scenarioMap.get(scenarioUid);
+    if (!node) continue;
+    const validRefs = refs.filter((ref) => featurePattern.test(ref.target));
+    if (validRefs.length === 0) {
+      issues.push(issue('ORPHAN_SCENARIO', `${scenarioUid} has no linked PRD feature`, node.path, node.line, { node: scenarioUid, severity: 'warning' }));
+    }
+    pushDuplicateIssues(issues, scenarioUid, validRefs, 'feature');
+    for (const ref of refs) {
+      if (!featurePattern.test(ref.target)) {
+        issues.push(issue('FORMAT_ERROR', `scenario ${scenarioUid} has invalid feature reference ${ref.target}`, ref.path, ref.line, { node: scenarioUid }));
+      }
+    }
+  }
+
+  for (const [featureUid, refs] of featureScenarioRefs) {
+    const node = featureMap.get(featureUid);
+    if (!node) continue;
+    const validRefs = refs.filter((ref) => scenarioPattern.test(ref.target));
+    if (validRefs.length === 0 && node.status !== 'planned' && node.status !== 'deprecated') {
+      issues.push(issue('ORPHAN_FEATURE', `${featureUid} has no linked scenario`, node.path, node.line, { node: featureUid, severity: 'warning' }));
+    }
+    pushDuplicateIssues(issues, featureUid, validRefs, 'scenario');
+    for (const ref of refs) {
+      if (!scenarioPattern.test(ref.target)) {
+        issues.push(issue('FORMAT_ERROR', `feature ${featureUid} has invalid scenario reference ${ref.target}`, ref.path, ref.line, { node: featureUid }));
+      }
+    }
+  }
+
+  for (const [scenarioUid, refs] of scenarioFeatureRefs) {
+    for (const ref of refs) {
+      if (!featurePattern.test(ref.target)) continue;
+      const featureUid = toUid('feature', ref.target);
+      if (!featureMap.has(featureUid)) continue;
+      const reverseRefs = featureScenarioRefs.get(featureUid) ?? [];
+      if (!reverseRefs.some((reverse) => toUid('scenario', reverse.target) === scenarioUid)) {
+        issues.push(issue(
+          'LINK_FORWARD_MISSING',
+          `${scenarioUid} references ${featureUid}, but ${featureUid}.scenarios does not include ${scenarioUid}`,
+          ref.path,
+          ref.line,
+          { node: scenarioUid },
+        ));
+      }
+    }
+  }
+
+  for (const [featureUid, refs] of featureScenarioRefs) {
+    for (const ref of refs) {
+      if (!scenarioPattern.test(ref.target)) continue;
+      const scenarioUid = toUid('scenario', ref.target);
+      if (!scenarioMap.has(scenarioUid)) continue;
+      const reverseRefs = scenarioFeatureRefs.get(scenarioUid) ?? [];
+      if (!reverseRefs.some((reverse) => toUid('feature', reverse.target) === featureUid)) {
+        issues.push(issue(
+          'LINK_BACKWARD_MISSING',
+          `${featureUid} covers ${scenarioUid}, but ${scenarioUid} does not reference ${featureUid}`,
+          ref.path,
+          ref.line,
+          { node: featureUid },
+        ));
+      }
+    }
+  }
+
+  return issues;
+}
+
+export async function validateScenarioPrdLinkIndex(root: string, graph: ArtifactGraph): Promise<ValidationIssue[]> {
+  const indexPath = 'artifacts/prd/feature-index.md';
+  let raw = '';
+  try {
+    raw = await readFile(join(root, indexPath), 'utf-8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      return [];
+    }
+    throw error;
+  }
+
+  const featureNodes = new Map(graph.nodes.filter((node) => node.type === 'feature').map((node) => [node.code, node]));
+  const issues: ValidationIssue[] = [];
+  raw.split(/\r?\n/).forEach((line, index) => {
+    const match = /\|\s*\[([A-Z]{1,4}\d+)\]\([^)]*\)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*(\d+)\s*\|/.exec(line);
+    if (!match) {
+      return;
+    }
+    const featureCode = match[1];
+    const expectedCount = Number(match[2]);
+    const feature = featureNodes.get(featureCode);
+    if (!feature) {
+      return;
+    }
+    const actualCount = relationOccurrences(feature, 'scenarios', 'scenario').length;
+    if (actualCount !== expectedCount) {
+      issues.push(issue(
+        'INDEX_MISMATCH',
+        `feature:${featureCode} index scenario count=${expectedCount}, actual=${actualCount}`,
+        indexPath,
+        index + 1,
+        { node: feature.uid, severity: 'warning' },
+      ));
+    }
+  });
+
+  return issues;
+}
+
 
 function validateCodeCommentTraceabilityFormat(graph: ArtifactGraph): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
@@ -695,74 +937,201 @@ export async function writeGraphCache(root: string, graph: ArtifactGraph): Promi
   }
 }
 
-function parseFile(type: string, path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
+interface ParsedArtifactFile {
+  nodes: Omit<ArtifactNode, 'uid'>[];
+  edges: ArtifactEdge[];
+  diagnostics: ValidationIssue[];
+}
+
+function parseFile(type: string, path: string, raw: string, schema: ArtifactSchema = DEFAULT_SCHEMA): ParsedArtifactFile {
   if (type === 'feature') {
-    return parseFeature(path, raw);
+    return { ...parseFeature(path, raw), diagnostics: [] };
   }
   if (type === 'scenario') {
-    return parseScenarios(path, raw);
+    return { ...parseScenarios(path, raw, schema), diagnostics: [] };
   }
   if (type === 'entity') {
-    return parseEntityRegistry(path, raw);
+    return { ...parseEntityRegistry(path, raw), diagnostics: [] };
   }
   if (type === 'decision') {
-    return parseDecisions(path, raw);
+    return { ...parseDecisions(path, raw), diagnostics: [] };
   }
   if (type === 'test') {
-    return parseTest(path, raw);
+    return { ...parseTest(path, raw, schema), diagnostics: [] };
   }
   if (type === 'design') {
-    return parseDesign(path, raw);
+    return { ...parseDesign(path, raw), diagnostics: [] };
   }
   if (type === 'e2e_test') {
-    return parseE2eTest(path, raw);
+    return { ...parseE2eTest(path, raw), diagnostics: [] };
   }
   if (type === 'e2e_registry') {
-    return parseE2eRegistry(path, raw);
+    return { ...parseE2eRegistry(path, raw), diagnostics: [] };
   }
   if (type === 'interface_contracts' || type === 'data_contracts' || type === 'application_state_machines' || type === 'error_model') {
-    return parseContractTable(type, path, raw);
+    return { ...parseContractTable(type, path, raw), diagnostics: [] };
   }
   if (type === 'domain-glossary') {
-    return parseDomainGlossary(path, raw);
+    return { ...parseDomainGlossary(path, raw), diagnostics: [] };
   }
   if (type === 'bounded-context-map') {
-    return parseBoundedContextMap(path, raw);
+    return { ...parseBoundedContextMap(path, raw), diagnostics: [] };
   }
   if (type === 'domain-invariants') {
-    return parseContractTable(type, path, raw);
+    return { ...parseContractTable(type, path, raw), diagnostics: [] };
   }
   if (type === 'generation-packet-spec') {
-    return parseGenerationPacketSpec(path, raw);
+    return { ...parseGenerationPacketSpec(path, raw), diagnostics: [] };
   }
   if (type === 'rule-golden-cases') {
-    return parseRuleGoldenCases(path, raw);
+    return { ...parseRuleGoldenCases(path, raw), diagnostics: [] };
   }
   if (type === 'test-strategy') {
-    return parseTestStrategy(path, raw);
+    return { ...parseTestStrategy(path, raw), diagnostics: [] };
   }
   if (type === 'traceability-matrix-v2') {
-    return parseTraceabilityMatrixV2(path, raw);
+    return { ...parseTraceabilityMatrixV2(path, raw), diagnostics: [] };
   }
   if (type === 'traceability-version-lock') {
-    return parseTraceabilityVersionLock(path, raw);
+    return { ...parseTraceabilityVersionLock(path, raw), diagnostics: [] };
   }
   if (type === 'report-contracts') {
-    return parseReportContracts(path, raw);
+    return { ...parseReportContracts(path, raw), diagnostics: [] };
   }
   if (type === 'verification-fixtures') {
-    return parseVerificationFixtures(path, raw);
+    return { ...parseVerificationFixtures(path, raw), diagnostics: [] };
   }
   if (type === 'ui-flow-contracts') {
-    return parseUIFlowContracts(path, raw);
+    return { ...parseUIFlowContracts(path, raw), diagnostics: [] };
   }
   if (type === 'non-functional-budgets') {
-    return parseNonFunctionalBudgets(path, raw);
+    return { ...parseNonFunctionalBudgets(path, raw), diagnostics: [] };
   }
   if (type === 'implementation-blueprint') {
-    return parseImplementationBlueprint(path, raw);
+    return { ...parseImplementationBlueprint(path, raw), diagnostics: [] };
   }
-  return { nodes: [], edges: [] };
+  // Generic fallback for registered types without a dedicated parser
+  return parseGenericMarkdown(type, path, raw, schema);
+}
+
+function parseGenericMarkdown(type: string, path: string, raw: string, schema: ArtifactSchema): ParsedArtifactFile {
+  const diagnostics: ValidationIssue[] = [];
+  const ext = extname(path).toLowerCase();
+  if (ext !== '.md' && ext !== '.markdown') {
+    diagnostics.push(issue(
+      'UNSUPPORTED_FORMAT',
+      `Generic parser only supports .md/.markdown files, got ${ext}`,
+      path,
+      1,
+      { severity: 'warning' },
+    ));
+    return { nodes: [], edges: [], diagnostics };
+  }
+
+  const parsed = matter(raw);
+  const data = parsed.data as Record<string, unknown>;
+  const code = String(data.id ?? '').trim();
+
+  if (!code) {
+    diagnostics.push(issue(
+      'ARTIFACT_ID_MISSING',
+      `Artifact of type ${type} at ${path} has no id in frontmatter`,
+      path,
+      1,
+      { severity: 'warning' },
+    ));
+    return { nodes: [], edges: [], diagnostics };
+  }
+
+  const idPattern = schema.idPatterns[type];
+  if (idPattern && !new RegExp(idPattern).test(code)) {
+    diagnostics.push(issue(
+      'INVALID_ID',
+      `Artifact ${type}:${code} does not match ${idPattern}`,
+      path,
+      1,
+      { node: toUid(type, code) },
+    ));
+  }
+
+  const title = String(data.title ?? headingTitle(raw, code) ?? code);
+  const typeDef = schema.types[type];
+  const extraFields = typeDef?.extraFields ?? [];
+  const indexedFields: Record<string, unknown> = {};
+
+  for (const field of extraFields) {
+    const value = data[field.name];
+    if (value === undefined) continue;
+
+    let mismatch = false;
+    switch (field.type) {
+      case 'string':
+        if (typeof value !== 'string') mismatch = true;
+        break;
+      case 'number':
+        if (typeof value !== 'number') mismatch = true;
+        break;
+      case 'boolean':
+        if (typeof value !== 'boolean') mismatch = true;
+        break;
+      case 'enum':
+        if (!field.enum?.includes(value as string | number | boolean)) mismatch = true;
+        break;
+    }
+
+    if (mismatch) {
+      diagnostics.push(issue(
+        'EXTRA_FIELD_TYPE_MISMATCH',
+        `Field ${field.name} expects ${field.type}${field.type === 'enum' ? ` [${field.enum?.join(', ')}]` : ''} but got ${JSON.stringify(value)}`,
+        path,
+        1,
+        { node: toUid(type, code), severity: 'warning' },
+      ));
+    } else {
+      indexedFields[field.name] = value;
+    }
+  }
+
+  // Build edges from related_* frontmatter fields
+  const edges: ArtifactEdge[] = [];
+  for (const [fieldKey, fieldValue] of Object.entries(data)) {
+    if (!fieldKey.startsWith('related_')) continue;
+    const suffix = fieldKey.slice('related_'.length);
+    const resolvedType = resolveArtifactTypeName(schema, suffix);
+    if (!resolvedType) continue;
+    const targets = toArray(fieldValue);
+    const targetPattern = schema.idPatterns[resolvedType];
+    for (const target of targets) {
+      const targetCode = String(target).trim();
+      if (!targetCode) continue;
+      if (targetPattern && !new RegExp(targetPattern).test(targetCode)) {
+        diagnostics.push(issue(
+          'INVALID_ID',
+          `Relation target ${resolvedType}:${targetCode} in ${fieldKey} does not match ${targetPattern}`,
+          path,
+          1,
+          { node: toUid(type, code) },
+        ));
+        continue;
+      }
+      edges.push(edge(toUid(type, code), toUid(resolvedType, targetCode), 'references', 'frontmatter', path, 1));
+    }
+  }
+
+  const node: Omit<ArtifactNode, 'uid'> = {
+    type,
+    code,
+    title,
+    path,
+    line: 1,
+    status: typeof data.status === 'string' ? data.status : undefined,
+    attrs: {
+      rawFrontmatter: data,
+      indexedFields,
+    },
+  };
+
+  return { nodes: [node], edges, diagnostics };
 }
 
 function parseFeature(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
@@ -780,7 +1149,13 @@ function parseFeature(path: string, raw: string): { nodes: Omit<ArtifactNode, 'u
     path,
     line: 1,
     status: typeof data.status === 'string' ? data.status : undefined,
-    attrs: { ...data, acceptanceCriteria: parseAcceptanceCriteria(raw) },
+    attrs: {
+      ...data,
+      acceptanceCriteria: parseAcceptanceCriteria(raw),
+      relationOccurrences: {
+        scenarios: frontmatterRelationOccurrences(path, 'scenarios', data.scenarios, 'scenario'),
+      },
+    },
   };
   const edges: ArtifactEdge[] = [
     ...frontmatterEdges(path, code, data.scenarios, 'scenario', 'covers'),
@@ -791,7 +1166,7 @@ function parseFeature(path: string, raw: string): { nodes: Omit<ArtifactNode, 'u
   return { nodes: [node], edges };
 }
 
-function parseScenarios(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
+function parseScenarios(path: string, raw: string, schema: ArtifactSchema = DEFAULT_SCHEMA): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
   const lines = raw.split(/\r?\n/);
   const starts: Array<{ code: string; title: string; line: number; index: number }> = [];
   lines.forEach((line, index) => {
@@ -807,10 +1182,26 @@ function parseScenarios(path: string, raw: string): { nodes: Omit<ArtifactNode, 
     const start = starts[i];
     const end = starts[i + 1]?.index ?? lines.length;
     const block = lines.slice(start.index, end);
-    nodes.push({ type: 'scenario', code: start.code, title: start.title, path, line: start.line });
-    edges.push(...markdownLineEdges(path, start, block, '关联功能', 'feature', 'references'));
-    edges.push(...markdownLineEdges(path, start, block, '关联决策', 'decision', 'references'));
-    edges.push(...markdownLineEdges(path, start, block, '关联实体', 'entity', 'references'));
+    const featureRefs = markdownRelationOccurrences(path, start, block, '关联功能', 'feature');
+    const decisionRefs = markdownRelationOccurrences(path, start, block, '关联决策', 'decision');
+    const entityRefs = markdownRelationOccurrences(path, start, block, '关联实体', 'entity');
+    nodes.push({
+      type: 'scenario',
+      code: start.code,
+      title: start.title,
+      path,
+      line: start.line,
+      attrs: {
+        relationOccurrences: {
+          '关联功能': featureRefs,
+          '关联决策': decisionRefs,
+          '关联实体': entityRefs,
+        },
+      },
+    });
+    edges.push(...featureRefs.filter(isValidRelationOccurrence).map((ref) => edge(toUid('scenario', start.code), toUid('feature', ref.target), 'references', 'markdown', path, ref.line)));
+    edges.push(...decisionRefs.filter(isValidRelationOccurrence).map((ref) => edge(toUid('scenario', start.code), toUid('decision', ref.target), 'references', 'markdown', path, ref.line)));
+    edges.push(...entityRefs.filter(isValidRelationOccurrence).map((ref) => edge(toUid('scenario', start.code), toUid('entity', ref.target), 'references', 'markdown', path, ref.line)));
   }
   return { nodes, edges };
 }
@@ -833,26 +1224,70 @@ function parseEntityRegistry(path: string, raw: string): { nodes: Omit<ArtifactN
 }
 
 function parseDecisions(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
+  const parsed = matter(raw);
+  const data = parsed.data as Record<string, unknown>;
+  const code = String(data.id ?? '').trim();
+  if (code) {
+    const title = String(data.title ?? headingTitle(raw, code) ?? code);
+    const node = {
+      type: 'decision' as const,
+      code,
+      title,
+      path,
+      line: 1,
+      status: typeof data.status === 'string' ? data.status : undefined,
+      attrs: { ...data },
+    };
+    const edges: ArtifactEdge[] = [
+      ...decisionFrontmatterEdges(path, code, data.related_features, 'feature', 'references'),
+      ...decisionFrontmatterEdges(path, code, data.related_scenarios, 'scenario', 'references'),
+    ];
+    return { nodes: [node], edges };
+  }
+
   const seen = new Set<string>();
   const nodes: Omit<ArtifactNode, 'uid'>[] = [];
   raw.split(/\r?\n/).forEach((line, index) => {
-    for (const code of extractCodes(line, 'decision')) {
-      if (seen.has(code)) {
+    for (const decisionCode of extractCodes(line, 'decision')) {
+      if (seen.has(decisionCode)) {
         continue;
       }
-      seen.add(code);
-      nodes.push({ type: 'decision', code, title: titleNearCode(line, code), path, line: index + 1 });
+      seen.add(decisionCode);
+      nodes.push({ type: 'decision', code: decisionCode, title: titleNearCode(line, decisionCode), path, line: index + 1 });
     }
   });
   return { nodes, edges: [] };
 }
 
-function parseTest(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
+/**
+ * Deterministic path classifier: is this file a test or an implementation source?
+ * Test indicators:
+ *   - `.test.*` or `.spec.*` extension suffix (e.g. `foo.test.ts`, `bar.spec.js`)
+ *   - lives under `tests/`, `test/`, or `__tests__/` directory
+ *   - filename matches `*Test.java` or `*Tests.java` (Java convention)
+ * Everything else → implementation source.
+ */
+function isTestFile(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/g, '/');
+  const name = basename(normalized);
+  // .test.* or .spec.* suffix
+  if (/\.(test|spec)\.[^.]+$/.test(name)) return true;
+  // directory-based: tests/, test/, __tests__/
+  if (/(^|\/)(tests|test|__tests__)\//.test(normalized)) return true;
+  // Java convention: *Test.java or *Tests.java
+  if (/\w+Tests?\.java$/.test(name)) return true;
+  return false;
+}
+
+function parseTest(path: string, raw: string, schema: ArtifactSchema = DEFAULT_SCHEMA): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
   const nodes: Omit<ArtifactNode, 'uid'>[] = [];
   const edges: ArtifactEdge[] = [];
-  const traceabilityComments = scanTraceabilityComments(raw);
+  const traceabilityComments = scanTraceabilityComments(raw, schema);
+  const isTest = isTestFile(path);
+  const nodeType = isTest ? 'test' : 'implementation';
+  const edgeKind = isTest ? 'verifies' : 'implements';
   const node = {
-    type: 'test',
+    type: nodeType,
     code: path,
     title: path.split('/').at(-1) ?? path,
     path,
@@ -862,17 +1297,10 @@ function parseTest(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'
   let hasTags = false;
   for (const { tags, lineNumber } of traceabilityComments.canonical) {
     hasTags = true;
-    for (const code of tags.scenario ?? []) {
-      edges.push(edge(toUid('test', path), toUid('scenario', code), 'verifies', 'test-comment', path, lineNumber));
-    }
-    for (const code of tags.feature ?? []) {
-      edges.push(edge(toUid('test', path), toUid('feature', code), 'verifies', 'test-comment', path, lineNumber));
-    }
-    for (const code of tags.entity ?? []) {
-      edges.push(edge(toUid('test', path), toUid('entity', code), 'verifies', 'test-comment', path, lineNumber));
-    }
-    for (const code of tags.decision ?? []) {
-      edges.push(edge(toUid('test', path), toUid('decision', code), 'verifies', 'test-comment', path, lineNumber));
+    for (const [tagType, codes] of Object.entries(tags)) {
+      for (const code of codes ?? []) {
+        edges.push(edge(toUid(nodeType, path), toUid(tagType, code), edgeKind, 'test-comment', path, lineNumber));
+      }
     }
   }
   if (hasTags || traceabilityComments.invalid.length > 0) {
@@ -881,17 +1309,15 @@ function parseTest(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'
   return { nodes, edges };
 }
 
-type TraceabilityTag = 'scenario' | 'feature' | 'entity' | 'decision';
-
-function scanTraceabilityComments(raw: string): {
-  canonical: Array<{ tags: Partial<Record<TraceabilityTag, string[]>>; lineNumber: number }>;
+function scanTraceabilityComments(raw: string, schema: ArtifactSchema = DEFAULT_SCHEMA): {
+  canonical: Array<{ tags: Partial<Record<string, string[]>>; lineNumber: number }>;
   invalid: Array<{ line: number; text: string; reason: string }>;
 } {
-  const canonical: Array<{ tags: Partial<Record<TraceabilityTag, string[]>>; lineNumber: number }> = [];
+  const canonical: Array<{ tags: Partial<Record<string, string[]>>; lineNumber: number }> = [];
   const invalid: Array<{ line: number; text: string; reason: string }> = [];
 
   for (const comment of scanCodeComments(raw)) {
-    if (!containsTraceabilityTag(comment.text)) {
+    if (!containsTraceabilityTag(comment.text, schema)) {
       continue;
     }
     if (comment.kind === 'block') {
@@ -902,7 +1328,7 @@ function scanTraceabilityComments(raw: string): {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: 'traceability tags must use standalone // comments' });
       continue;
     }
-    const parsed = parseTraceabilityTagLine(comment.text.trim());
+    const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
     } else {
@@ -911,14 +1337,14 @@ function scanTraceabilityComments(raw: string): {
   }
 
   for (const comment of scanMarkdownComments(raw)) {
-    if (!containsTraceabilityTag(comment.text)) {
+    if (!containsTraceabilityTag(comment.text, schema)) {
       continue;
     }
     if (!comment.standalone) {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: 'traceability tags in markdown must use standalone HTML comments' });
       continue;
     }
-    const parsed = parseTraceabilityTagLine(comment.text.trim());
+    const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
     } else {
@@ -1011,59 +1437,93 @@ function scanMarkdownComments(raw: string): Array<{ text: string; lineNumber: nu
   return comments;
 }
 
-function parseTraceabilityTagLine(text: string): { valid: true; tags: Partial<Record<TraceabilityTag, string[]>> } | { valid: false; reason: string } {
+function parseTraceabilityTagLine(text: string, schema: ArtifactSchema = DEFAULT_SCHEMA): { valid: true; tags: Partial<Record<string, string[]>> } | { valid: false; reason: string } {
   const trimmed = text.trim();
-  if (!/^@(scenario|feature|entity|decision)\b/.test(trimmed)) {
-    return { valid: false, reason: 'traceability line must start with @scenario, @feature, @entity, or @decision' };
+  // Build a regex that matches @<known-core-tag> or @<any-registered-type-or-alias>
+  const coreTags = ['scenario', 'feature', 'entity', 'decision'];
+  const allTypeAndAliasTokens = new Set<string>(coreTags);
+  for (const [type, definition] of Object.entries(schema.types)) {
+    allTypeAndAliasTokens.add(type);
+    for (const alias of definition.aliases ?? []) {
+      allTypeAndAliasTokens.add(alias);
+    }
+  }
+  // Escape tokens for regex, match longest first
+  const escapedTokens = [...allTypeAndAliasTokens]
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'));
+  const tagPattern = new RegExp(`@(${escapedTokens.join('|')})\\b`, 'g');
+
+  const firstMatch = tagPattern.exec(trimmed);
+  if (!firstMatch || firstMatch.index !== 0) {
+    return { valid: false, reason: 'traceability line must start with a recognized @type tag' };
   }
 
-  const tags: Partial<Record<TraceabilityTag, string[]>> = {};
-  const tagPattern = /@(scenario|feature|entity|decision)\b/g;
-  const matches = [...trimmed.matchAll(tagPattern)];
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index];
-    const tag = match[1] as TraceabilityTag;
-    const valueStart = (match.index ?? 0) + match[0].length;
-    const valueEnd = index + 1 < matches.length ? matches[index + 1].index ?? trimmed.length : trimmed.length;
-    const value = trimmed.slice(valueStart, valueEnd);
-    const codes = extractTraceabilityCodes(value, tag);
-    if (codes.length === 0) {
-      return { valid: false, reason: `traceability tag @${tag} must contain at least one valid ID` };
+  const tags: Partial<Record<string, string[]>> = {};
+  const allMatches = [...trimmed.matchAll(new RegExp(tagPattern.source, tagPattern.flags))];
+  for (let index = 0; index < allMatches.length; index += 1) {
+    const match = allMatches[index];
+    const rawTag = match[1];
+    const resolvedType = resolveArtifactTypeName(schema, rawTag);
+    if (!resolvedType) {
+      return { valid: false, reason: `unknown traceability type @${rawTag}` };
     }
-    tags[tag] = [...(tags[tag] ?? []), ...codes];
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const valueEnd = index + 1 < allMatches.length ? allMatches[index + 1].index ?? trimmed.length : trimmed.length;
+    const value = trimmed.slice(valueStart, valueEnd);
+    const codes = extractTraceabilityCodes(value, resolvedType, schema);
+    if (codes.length === 0) {
+      return { valid: false, reason: `traceability tag @${rawTag} must contain at least one valid ID` };
+    }
+    tags[resolvedType] = [...(tags[resolvedType] ?? []), ...codes];
   }
 
   return { valid: true, tags };
 }
 
-function extractTraceabilityCodes(text: string, tag: TraceabilityTag): string[] {
+function extractTraceabilityCodes(text: string, resolvedType: string, schema: ArtifactSchema = DEFAULT_SCHEMA): string[] {
   const trimmed = text.trim();
   if (!trimmed) {
     return [];
   }
   const tokens = trimmed.split(/[\s,]+/).filter(Boolean);
-  const expanded = tokens.flatMap((value) => expandTraceabilityToken(value, tag));
+  const expanded = tokens.flatMap((value) => expandTraceabilityToken(value, resolvedType, schema));
   if (expanded.length === 0 || expanded.includes('')) {
     return [];
   }
   return [...new Set(expanded)];
 }
 
-function expandTraceabilityToken(value: string, tag: TraceabilityTag): string[] {
-  if (!traceabilityTokenPattern(tag).test(value)) {
+function expandTraceabilityToken(value: string, resolvedType: string, schema: ArtifactSchema = DEFAULT_SCHEMA): string[] {
+  if (!traceabilityTokenPattern(resolvedType, schema).test(value)) {
     return [''];
   }
   return expandCodeRange(value);
 }
 
-function traceabilityTokenPattern(tag: TraceabilityTag): RegExp {
-  const patterns: Record<TraceabilityTag, RegExp> = {
+function traceabilityTokenPattern(resolvedType: string, schema: ArtifactSchema = DEFAULT_SCHEMA): RegExp {
+  const corePatterns: Record<string, RegExp> = {
     decision: /^D-[A-Z]+-\d+$/,
     entity: /^E-\d{3,}(?:~(?:E-)?\d{3,})?$/,
     feature: /^(?!AC\d+$)[A-Z]{1,4}\d+(?:~(?:[A-Z]{1,4})?\d+)?$/,
     scenario: /^S-\d+[a-z]?(?:~(?:S-)?\d+[a-z]?)?$/,
   };
-  return patterns[tag];
+  // If schema overrides idPattern for a core type, use the project pattern
+  const schemaOverride = schema.idPatterns[resolvedType];
+  const defaultPattern = DEFAULT_SCHEMA.idPatterns[resolvedType];
+  if (schemaOverride && schemaOverride !== defaultPattern) {
+    return new RegExp(schemaOverride);
+  }
+  // Core types use hardcoded patterns for backward compatibility
+  if (corePatterns[resolvedType]) {
+    return corePatterns[resolvedType];
+  }
+  // Custom types use idPatterns from schema
+  if (schemaOverride) {
+    return new RegExp(schemaOverride);
+  }
+  // No pattern available — reject all tokens
+  return /(?!)/;
 }
 
 function expandCodeRange(value: string): string[] {
@@ -1084,8 +1544,9 @@ function expandCodeRange(value: string): string[] {
   return Array.from({ length: end - start + 1 }, (_, index) => `${prefix}${String(start + index).padStart(width, '0')}`);
 }
 
-function containsTraceabilityTag(value: string): boolean {
-  return value.includes('@scenario') || value.includes('@feature') || value.includes('@entity') || value.includes('@decision');
+function containsTraceabilityTag(value: string, schema: ArtifactSchema = DEFAULT_SCHEMA): boolean {
+  // Quick check for @ prefix; detailed validation is done in parseTraceabilityTagLine
+  return /@[\w][\w-]*\b/.test(value);
 }
 
 function parseDesign(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
@@ -1993,6 +2454,13 @@ function frontmatterEdges(
   });
 }
 
+function frontmatterRelationOccurrences(path: string, field: string, value: unknown, targetType: string): RelationOccurrence[] {
+  return toArray(value)
+    .map((target) => String(target).trim())
+    .filter(Boolean)
+    .map((target) => ({ field, targetType, target, path, line: 1 }));
+}
+
 function designFrontmatterEdges(path: string, designCode: string, value: unknown, targetType: string, kind: string): ArtifactEdge[] {
   return toArray(value).flatMap((target) => {
     const code = String(target).trim();
@@ -2000,6 +2468,16 @@ function designFrontmatterEdges(path: string, designCode: string, value: unknown
       return [];
     }
     return [edge(toUid('design', designCode), toUid(targetType, code), kind, 'frontmatter', path, 1)];
+  });
+}
+
+function decisionFrontmatterEdges(path: string, decisionCode: string, value: unknown, targetType: string, kind: string): ArtifactEdge[] {
+  return toArray(value).flatMap((target) => {
+    const code = String(target).trim();
+    if (!code) {
+      return [];
+    }
+    return [edge(toUid('decision', decisionCode), toUid(targetType, code), kind, 'frontmatter', path, 1)];
   });
 }
 
@@ -2022,6 +2500,110 @@ function markdownLineEdges(
     }
   });
   return result;
+}
+
+function markdownRelationOccurrences(
+  path: string,
+  scenario: { code: string; index: number },
+  block: string[],
+  label: string,
+  targetType: string,
+  schema?: ArtifactSchema,
+): RelationOccurrence[] {
+  const result: RelationOccurrence[] = [];
+  block.forEach((line, index) => {
+    if (!line.includes(label)) {
+      return;
+    }
+    const relationText = line.split(/[:：]/).slice(1).join(':').split(/\s+[—-]\s+/)[0] ?? line;
+    const lineNumber = scenario.index + index + 1;
+    const codes = extractCodes(relationText, targetType, schema);
+    for (const code of codes) {
+      result.push({ field: label, targetType, target: code, path, line: lineNumber, raw: relationText.trim() });
+    }
+    for (const invalid of invalidRelationCandidates(relationText, targetType, codes)) {
+      result.push({ field: label, targetType, target: invalid, path, line: lineNumber, raw: relationText.trim() });
+    }
+  });
+  return result;
+}
+
+function relationOccurrences(node: ArtifactNode, field: string, targetType: string): RelationOccurrence[] {
+  const relationRecord = asRecord(node.attrs?.relationOccurrences);
+  const rawOccurrences = toArray(relationRecord[field]);
+  return rawOccurrences.flatMap((value) => {
+    if (typeof value === 'string') {
+      return [{ field, targetType, target: value, path: node.path, line: node.line }];
+    }
+    const record = asRecord(value);
+    const target = String(record.target ?? '').trim();
+    if (!target) {
+      return [];
+    }
+    return [{
+      field: String(record.field ?? field),
+      targetType: String(record.targetType ?? targetType),
+      target,
+      path: typeof record.path === 'string' ? record.path : node.path,
+      line: typeof record.line === 'number' ? record.line : node.line,
+      raw: typeof record.raw === 'string' ? record.raw : undefined,
+    }];
+  });
+}
+
+function pushDuplicateIssues(issues: ValidationIssue[], nodeUid: string, refs: RelationOccurrence[], targetType: string): void {
+  const seen = new Set<string>();
+  for (const ref of refs) {
+    const targetUid = toUid(targetType, ref.target);
+    if (seen.has(targetUid)) {
+      issues.push(issue('DUPLICATE', `${nodeUid} repeats ${targetUid}`, ref.path, ref.line, { node: nodeUid }));
+    }
+    seen.add(targetUid);
+  }
+}
+
+function isValidRelationOccurrence(ref: RelationOccurrence): boolean {
+  return relationTargetPattern(ref.targetType).test(ref.target);
+}
+
+function invalidRelationCandidates(text: string, targetType: string, validCodes: string[]): string[] {
+  const valid = new Set(validCodes);
+  const candidates = text
+    .split(/[\s,，、;；()[\]（）]+/)
+    .map((token) => token.trim().replace(/^["'`]+|["'`.:：]+$/g, ''))
+    .filter(Boolean);
+  const pattern = relationTargetPattern(targetType);
+  return [...new Set(candidates.filter((candidate) => (
+    looksLikeRelationId(candidate, targetType)
+    && !valid.has(candidate)
+    && !pattern.test(candidate)
+  )))];
+}
+
+function looksLikeRelationId(candidate: string, targetType: string): boolean {
+  if (targetType === 'feature') {
+    return /^[A-Z][A-Z0-9-]*$/.test(candidate) && (/\d/.test(candidate) || candidate.includes('-')) && !/^AC\d+$/.test(candidate);
+  }
+  if (targetType === 'scenario') {
+    return /^S[-A-Z0-9]+[a-z]?$/.test(candidate);
+  }
+  if (targetType === 'decision') {
+    return /^D[-A-Z0-9]+$/.test(candidate);
+  }
+  if (targetType === 'entity') {
+    return /^E[-0-9]+$/.test(candidate);
+  }
+  return false;
+}
+
+function relationTargetPattern(targetType: string): RegExp {
+  const patterns: Record<string, RegExp> = {
+    decision: /^D-[A-Z]+-\d+$/,
+    entity: /^E-\d{3,}$/,
+    feature: /^(?!AC\d+$)[A-Z]{1,4}\d+$/,
+    scenario: /^S-\d+[a-z]?$/,
+  };
+  return patterns[targetType] ?? /^.+$/;
 }
 
 function findDependsOnCycles(graph: ArtifactGraph): string[][] {
@@ -2709,14 +3291,22 @@ function matchesPattern(file: string, pattern: string): boolean {
   return globToRegExp(pattern).test(file);
 }
 
-function extractCodes(text: string, type: string): string[] {
-  const patterns: Record<string, RegExp> = {
+function extractCodes(text: string, type: string, schema?: ArtifactSchema): string[] {
+  const corePatterns: Record<string, RegExp> = {
     decision: /\bD-[A-Z]+-\d+\b/g,
     entity: /\bE-\d{3,}\b/g,
     feature: /\b(?!AC\d+\b)[A-Z]{1,4}\d+\b/g,
     scenario: /\bS-\d+[a-z]?\b/g,
   };
-  return [...text.matchAll(patterns[type] ?? /$a/g)].map((match) => match[0]);
+  // If schema overrides idPattern for a core type, use the project pattern
+  if (schema) {
+    const defaultPattern = DEFAULT_SCHEMA.idPatterns[type];
+    const schemaOverride = schema.idPatterns[type];
+    if (schemaOverride && schemaOverride !== defaultPattern) {
+      return [...text.matchAll(new RegExp(schemaOverride, 'g'))].map((match) => match[0]);
+    }
+  }
+  return [...text.matchAll(corePatterns[type] ?? /$a/g)].map((match) => match[0]);
 }
 
 function extractE2eTcFields(block: string[]): Record<string, string> {
@@ -3094,15 +3684,34 @@ const CONTEXT_CATEGORIES: Record<string, string> = {
 
 export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, BASELINE_ITEMS_COUNT, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT } from './packet-constants.js';
 
+// Re-export target selector
+export { parseTargetSelector, resolveCliTarget } from './target-selector.js';
+
 const TIER_ORDER: ContextTier[] = ['baseline', 'target', 'direct', 'matrix', 'transitive'];
 
 export function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOptions): ContextManifest {
   const mode: ContextMode = opts.mode ?? 'full';
   const maxPerCategory = opts.maxPerCategory ?? 20;
 
-  // Determine target — exactly one required
-  const targetCount = [opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).length;
-  if (targetCount > 1) {
+  // Determine target — unified `target` field OR exactly one legacy field
+  const legacyCount = [opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).length;
+  if (opts.target && legacyCount > 0) {
+    return {
+      schemaVersion: '1.0',
+      target: { type: '', id: '', uid: '' },
+      context: {},
+      missing: ['互斥：target 与 --feature/--scenario/--decision/--design/--e2e-test 不能同时使用'],
+      missingDetails: [{
+        ref: [opts.target.type + ':' + opts.target.id, opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).join(', '),
+        from: 'cli-options',
+        kind: 'multiple-targets',
+        message: '互斥：target 与 --feature/--scenario/--decision/--design/--e2e-test 不能同时使用',
+        suggestedAction: '只指定一种 target 形式',
+      }],
+      omitted: [],
+    };
+  }
+  if (legacyCount > 1) {
     return {
       schemaVersion: '1.0',
       target: { type: '', id: '', uid: '' },
@@ -3121,7 +3730,8 @@ export function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOption
 
   let targetType: string | undefined;
   let targetId: string | undefined;
-  if (opts.feature) { targetType = 'feature'; targetId = opts.feature; }
+  if (opts.target) { targetType = opts.target.type; targetId = opts.target.id; }
+  else if (opts.feature) { targetType = 'feature'; targetId = opts.feature; }
   else if (opts.scenario) { targetType = 'scenario'; targetId = opts.scenario; }
   else if (opts.decision) { targetType = 'decision'; targetId = opts.decision; }
   else if (opts.design) { targetType = 'design'; targetId = opts.design; }
@@ -3489,6 +4099,7 @@ export type {
 export {
   VALID_PACKET_TARGET_TYPES,
   isPacketTargetType,
+  isPacketTargetTypeDynamic,
   validatePacket,
   validatePacketMarkdown,
 } from './packet-validator.js';
@@ -3572,10 +4183,15 @@ export type {
   GitChangeMode,
   GitChangeResult,
 } from './git-changes.js';
+export { resolveGitHookPath } from './git-hook-path.js';
+export type { GitHookName } from './git-hook-path.js';
 export {
+  applyPreparedManagedHookBlocks,
   installManagedHookBlock,
+  prepareManagedHookBlock,
 } from './hook-installer.js';
 export type {
   HookInstallResult,
   ManagedHookBlockOptions,
+  PreparedManagedHookBlock,
 } from './hook-installer.js';

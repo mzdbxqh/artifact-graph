@@ -1,0 +1,20 @@
+types:
+  test:
+    paths: ["src/**/*.java"]
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    aliases: [api-contract]
+  data_contract:
+    paths: ["artifacts/contracts/data/**/*.md"]
+    target: true
+    aliases: [data-contract]
+  db_migration:
+    paths: ["artifacts/migrations/**/*.md"]
+    aliases: [migration]
+idPatterns:
+  test: "^.+\\.java$"
+  api_contract: "^API-\\d+$"
+  data_contract: "^DATA-\\d+$"
+  db_migration: "^MIG-[\\w-]+$"
+statuses: [active]

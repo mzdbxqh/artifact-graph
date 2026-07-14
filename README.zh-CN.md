@@ -13,7 +13,13 @@
 pnpm add -D artifact-graph
 ```
 
-需要 Node.js `>=22.0.0`。
+或从 GitHub 安装：
+
+```bash
+npm install github:mzdbxqh/artifact-graph
+```
+
+需要 Node.js `>=22.0.0`。pnpm 10+ 需要配置原生构建白名单，详见 [INSTALL.md](INSTALL.md)。
 
 ## 快速开始
 

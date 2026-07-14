@@ -18,4 +18,5 @@ artifact_graph() {
   return 127
 }
 
+artifact_graph validate --warning-only || exit $?
 artifact_graph version-lock audit --strict-missing-lock

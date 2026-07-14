@@ -3,16 +3,16 @@
 // src/cli.ts
 import yaml2 from "js-yaml";
 import { realpathSync } from "fs";
-import { access as access2, readFile as readFile4, writeFile as writeFile6 } from "fs/promises";
-import { join as join6 } from "path";
+import { access as access2, readFile as readFile3, writeFile as writeFile5 } from "fs/promises";
+import { join as join7 } from "path";
 import { fileURLToPath } from "url";
 
 // src/index.ts
 import Database from "better-sqlite3";
 import matter from "gray-matter";
 import yaml from "js-yaml";
-import { mkdir as mkdir4, readFile as readFile3, readdir, writeFile as writeFile4 } from "fs/promises";
-import { basename, dirname as dirname3, extname, join as join4, relative as relative2 } from "path";
+import { mkdir as mkdir4, readFile as readFile2, readdir, writeFile as writeFile3 } from "fs/promises";
+import { basename as basename2, dirname as dirname3, extname, join as join5, relative as relative2 } from "path";
 
 // src/packet-constants.ts
 var ALWAYS_PRESENT_ITEMS = [
@@ -54,8 +54,17 @@ var VALID_PACKET_TARGET_TYPES = ["feature", "scenario", "decision", "design", "e
 function isPacketTargetType(type) {
   return VALID_PACKET_TARGET_TYPES.includes(type);
 }
+function isPacketTargetTypeDynamic(type, schema) {
+  if (schema) {
+    const definition = schema.types[type];
+    if (!definition) return false;
+    if (definition.target === true) return true;
+    return isPacketTargetType(type) && definition.role === type;
+  }
+  return isPacketTargetType(type);
+}
 var VALID_TARGET_TYPES = [...VALID_PACKET_TARGET_TYPES];
-function validatePacket(packet) {
+function validatePacket(packet, schema) {
   const issues = [];
   if (packet.schemaVersion !== "1.0") {
     issues.push({
@@ -65,11 +74,12 @@ function validatePacket(packet) {
       path: "schemaVersion"
     });
   }
-  if (!isPacketTargetType(packet.target.type)) {
+  if (!isPacketTargetTypeDynamic(packet.target.type, schema)) {
+    const validTypes = schema ? Object.keys(schema.types).filter((t) => isPacketTargetTypeDynamic(t, schema)) : VALID_TARGET_TYPES;
     issues.push({
       severity: "error",
       code: "PKT-002",
-      message: `target.type must be one of [${VALID_TARGET_TYPES.join(", ")}], got "${packet.target.type}"`,
+      message: `target.type must be one of [${validTypes.join(", ")}], got "${packet.target.type}"`,
       path: "target.type"
     });
   }
@@ -167,6 +177,55 @@ function validatePacket(packet) {
   }
   const hasError = issues.some((i) => i.severity === "error");
   return { ok: !hasError, issues };
+}
+
+// src/target-selector.ts
+function parseTargetSelector(value) {
+  const separator = value.indexOf(":");
+  if (separator <= 0 || separator === value.length - 1) {
+    throw new Error("target must use <type>:<id>");
+  }
+  return { type: value.slice(0, separator), id: value.slice(separator + 1) };
+}
+var LEGACY_FLAGS = ["feature", "scenario", "decision", "design", "e2e-test"];
+var LEGACY_FLAG_TO_TYPE = {
+  feature: "feature",
+  scenario: "scenario",
+  decision: "decision",
+  design: "design",
+  "e2e-test": "e2e_test"
+};
+function resolveCliTarget(flags, schema) {
+  const hasTarget = typeof flags.target === "string";
+  const legacyEntries = LEGACY_FLAGS.filter((flag) => typeof flags[flag] === "string").map((flag) => flag);
+  if (hasTarget && legacyEntries.length > 0) {
+    throw new Error(
+      `\u4E92\u65A5\uFF1A--target \u4E0E --${legacyEntries[0]} \u4E0D\u80FD\u540C\u65F6\u4F7F\u7528`
+    );
+  }
+  if (hasTarget) {
+    const target = parseTargetSelector(flags.target);
+    const targetTypes = getTargetArtifactTypes(schema);
+    if (!targetTypes.includes(target.type)) {
+      throw new Error(
+        `\u7C7B\u578B "${target.type}" \u4E0D\u662F\u5408\u6CD5\u7684 target \u7C7B\u578B\u6216\u672A\u542F\u7528 target: true\u3002\u5408\u6CD5\u7C7B\u578B: ${targetTypes.join(", ")}`
+      );
+    }
+    return target;
+  }
+  if (legacyEntries.length > 1) {
+    throw new Error(
+      `\u4E92\u65A5\uFF1A--${legacyEntries[0]} \u4E0E --${legacyEntries[1]} \u4E0D\u80FD\u540C\u65F6\u4F7F\u7528`
+    );
+  }
+  if (legacyEntries.length === 1) {
+    const flag = legacyEntries[0];
+    const type = LEGACY_FLAG_TO_TYPE[flag];
+    return { type, id: flags[flag] };
+  }
+  throw new Error(
+    "\u672A\u6307\u5B9A target\uFF1A\u8BF7\u4F7F\u7528 --target <type>:<id> \u6216 --feature/--scenario/--decision/--design/--e2e-test <id>"
+  );
 }
 
 // src/packet-assembler.ts
@@ -617,7 +676,9 @@ import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
 var VALID_TYPES = new Set(VALID_PACKET_TARGET_TYPES);
 var VALID_TYPES_LABEL = VALID_PACKET_TARGET_TYPES.join(", ");
-function parseTargetsFile(content) {
+function parseTargetsFile(content, schema) {
+  const validTypes = schema ? new Set(getTargetArtifactTypes(schema)) : VALID_TYPES;
+  const validTypesLabel = [...validTypes].join(", ");
   const targets = [];
   const errors = [];
   const lines = content.split("\n");
@@ -631,8 +692,8 @@ function parseTargetsFile(content) {
     }
     const type = line.slice(0, colonIdx).trim();
     const id = line.slice(colonIdx + 1).trim();
-    if (!VALID_TYPES.has(type)) {
-      errors.push({ line: i + 1, raw: lines[i], message: `\u975E\u6CD5\u7C7B\u578B "${type}"\uFF0C\u5141\u8BB8\u503C: ${VALID_TYPES_LABEL}` });
+    if (!validTypes.has(type)) {
+      errors.push({ line: i + 1, raw: lines[i], message: `\u975E\u6CD5\u7C7B\u578B "${type}"\uFF0C\u5141\u8BB8\u503C: ${validTypesLabel}` });
       continue;
     }
     if (!id) {
@@ -656,17 +717,8 @@ async function auditSingleTarget(target, graph, options) {
     errors: []
   };
   try {
-    const contextOpts = {
-      [target.type]: target.id
-    };
-    if (options.mode) contextOpts.mode = options.mode;
-    if (options.maxPerCategory !== void 0) contextOpts.maxPerCategory = options.maxPerCategory;
     const manifest = resolveArtifactContext(graph, {
-      feature: target.type === "feature" ? target.id : void 0,
-      scenario: target.type === "scenario" ? target.id : void 0,
-      decision: target.type === "decision" ? target.id : void 0,
-      design: target.type === "design" ? target.id : void 0,
-      e2e_test: target.type === "e2e_test" ? target.id : void 0,
+      target: { type: target.type, id: target.id },
       mode: options.mode,
       maxPerCategory: options.maxPerCategory
     });
@@ -683,7 +735,7 @@ async function auditSingleTarget(target, graph, options) {
       totalItems += items.length;
     }
     entry.itemsCount = totalItems;
-    const validationResult = validatePacket(packet);
+    const validationResult = validatePacket(packet, options.schema);
     if (validationResult.issues.length > 0) {
       entry.validationIssues = validationResult.issues;
     }
@@ -813,7 +865,8 @@ async function discoverAndAuditPackets(root, options) {
     maxPerCategory: options.maxPerCategory,
     summaryOnly: options.summaryOnly,
     sampleTargets: options.sampleTargets,
-    summaryDetail: options.summaryDetail
+    summaryDetail: options.summaryDetail,
+    schema: config
   }, graph);
 }
 
@@ -1799,13 +1852,16 @@ function stableEntryJson(entry) {
 }
 function normalizeVersionEdgeKind(edge2) {
   if (edge2.source === "test-comment") {
-    return edge2.sourcePath.match(/\.(test|spec)\.(ts|tsx|rs)$/) ? "verifies" : "implements";
+    return edge2.kind === "verifies" ? "verifies" : "implements";
   }
   return edge2.kind;
 }
 function classifyNode(node) {
+  if (node.type === "implementation") {
+    return "code";
+  }
   if (node.type === "test") {
-    return node.path.match(/\.(test|spec)\.(ts|tsx|rs)$/) ? "test" : "code";
+    return "test";
   }
   return "artifact";
 }
@@ -2063,30 +2119,195 @@ function sortUnique2(items) {
   return [...new Set(items)].sort((left, right) => left.localeCompare(right));
 }
 
+// src/git-hook-path.ts
+import { execFile as execFile3 } from "child_process";
+import { isAbsolute as isAbsolute2, resolve as resolve2 } from "path";
+import { promisify as promisify3 } from "util";
+var execFileAsync3 = promisify3(execFile3);
+async function resolveGitHookPath(root, hookName) {
+  const { stdout } = await execFileAsync3("git", [
+    "-C",
+    root,
+    "rev-parse",
+    "--git-path",
+    `hooks/${hookName}`
+  ]);
+  const value = stdout.trim();
+  if (!value) throw new Error(`Git returned an empty hook path for ${hookName}`);
+  return isAbsolute2(value) ? resolve2(value) : resolve2(root, value);
+}
+
 // src/hook-installer.ts
-import { chmod, mkdir as mkdir3, readFile as readFile2, writeFile as writeFile3 } from "fs/promises";
-import { dirname as dirname2 } from "path";
+import { constants as constants2 } from "fs";
+import { randomUUID } from "crypto";
+import { lstat, mkdir as mkdir3, open, readlink, rename, unlink } from "fs/promises";
+import { basename, dirname as dirname2, join as join4 } from "path";
 var DEFAULT_MARKER_ID = "artifact-chain-assistant";
-async function installManagedHookBlock(options) {
+var MANAGED_STATE_PREFIX = "# artifact-chain-assistant managed state v1:";
+var UnsupportedHookInterpreterError = class extends Error {
+  constructor(hookPath, shebang) {
+    super(
+      `Refusing to modify non-shell Git hook ${hookPath} (${shebang || "missing shebang"}). Call the artifact-chain hook from the existing hook explicitly.`
+    );
+    this.hookPath = hookPath;
+    this.shebang = shebang;
+  }
+  hookPath;
+  shebang;
+  code = "UNSUPPORTED_HOOK_INTERPRETER";
+};
+var SymlinkHookUnsupportedError = class extends Error {
+  constructor(hookPath, linkTarget) {
+    super(
+      `SYMLINK_HOOK_UNSUPPORTED: Refusing to modify Git hook symlink ${hookPath} -> ${linkTarget}. Integrate the artifact-graph commands manually in the symlink target or replace the link yourself.`
+    );
+    this.hookPath = hookPath;
+    this.linkTarget = linkTarget;
+  }
+  hookPath;
+  linkTarget;
+  code = "SYMLINK_HOOK_UNSUPPORTED";
+};
+var UnsupportedHookTypeError = class extends Error {
+  constructor(hookPath) {
+    super(`UNSUPPORTED_HOOK_TYPE: Git hook path ${hookPath} is not a regular file. Resolve it manually before retrying.`);
+    this.hookPath = hookPath;
+  }
+  hookPath;
+  code = "UNSUPPORTED_HOOK_TYPE";
+};
+var InvalidManagedHookStateError = class extends Error {
+  constructor(hookPath, detail) {
+    super(`INVALID_MANAGED_HOOK_STATE: Cannot safely update ${hookPath}: ${detail}`);
+    this.hookPath = hookPath;
+  }
+  hookPath;
+  code = "INVALID_MANAGED_HOOK_STATE";
+};
+var ConcurrentHookModificationError = class extends Error {
+  constructor(hookPath) {
+    super(`Refusing to overwrite concurrently modified Git hook ${hookPath}. Retry the operation after reviewing the hook.`);
+    this.hookPath = hookPath;
+  }
+  hookPath;
+  code = "CONCURRENT_HOOK_MODIFICATION";
+};
+var HookTransactionRollbackError = class extends Error {
+  constructor(operationError, rollbackErrors) {
+    super(
+      `HOOK_TRANSACTION_ROLLBACK_FAILED: Hook update failed and ${rollbackErrors.length} rollback operation(s) also failed: ` + rollbackErrors.map(({ hookPath, error }) => `${hookPath}: ${error.message}`).join("; ")
+    );
+    this.operationError = operationError;
+    this.rollbackErrors = rollbackErrors;
+  }
+  operationError;
+  rollbackErrors;
+  code = "HOOK_TRANSACTION_ROLLBACK_FAILED";
+};
+function detectHookInterpreter(content) {
+  if (content.trim().length === 0) {
+    return "empty";
+  }
+  const firstLine = content.split(/\r?\n/, 1)[0];
+  const tokens = firstLine.match(/^#!\s*(.*)$/)?.[1]?.trim().split(/\s+/) ?? [];
+  const [command, ...args] = tokens;
+  const interpreter = command === "/usr/bin/env" ? args[0] === "-S" ? args[1] : args[0] : command;
+  const name = interpreter?.split("/").at(-1);
+  return name === "sh" || name === "bash" || name === "dash" || name === "zsh" ? "shell" : "unsupported";
+}
+async function prepareManagedHookBlock(options) {
   const markerId = options.markerId ?? DEFAULT_MARKER_ID;
   const begin = beginMarker(markerId);
   const end = endMarker(markerId);
-  const existing = await readHook(options.hookPath);
+  const snapshot = await readHookSnapshot(options.hookPath);
+  assertSupportedHookEntry(options.hookPath, snapshot);
+  const existing = snapshot.kind === "file" ? snapshot.bytes : Buffer.alloc(0);
   const range = findManagedRange(existing, begin, end);
   if (options.uninstall === true) {
     if (!range) {
-      return { hookPath: options.hookPath, action: "unchanged", markerId };
+      return {
+        hookPath: options.hookPath,
+        result: { hookPath: options.hookPath, action: "unchanged", markerId },
+        snapshot,
+        desired: desiredFromSnapshot(snapshot),
+        writeRequired: false
+      };
     }
-    await writeHook(options.hookPath, stripExtraBlankLines(`${existing.slice(0, range.start)}${existing.slice(range.end)}`));
-    return { hookPath: options.hookPath, action: "uninstalled", markerId };
+    const restored = restoreManagedHook(existing, range, snapshotMode(snapshot), options.hookPath);
+    return {
+      hookPath: options.hookPath,
+      result: { hookPath: options.hookPath, action: "uninstalled", markerId },
+      snapshot,
+      desired: restored,
+      writeRequired: true
+    };
   }
-  const managedBlock = `${begin}
-${options.block.trimEnd()}
-${end}
-`;
-  const next = range ? `${existing.slice(0, range.start)}${managedBlock}${existing.slice(range.end)}` : appendManagedBlock(existing, managedBlock);
-  await writeHook(options.hookPath, next);
-  return { hookPath: options.hookPath, action: range ? "replaced" : "installed", markerId };
+  const existingText = existing.toString("utf8");
+  if (detectHookInterpreter(existingText) === "unsupported") {
+    throw new UnsupportedHookInterpreterError(options.hookPath, existingText.split(/\r?\n/, 1)[0]);
+  }
+  const base = range ? restoreManagedHook(existing, range, snapshotMode(snapshot), options.hookPath) : desiredFromSnapshot(snapshot);
+  const baseText = base.bytes.toString("utf8");
+  if (detectHookInterpreter(baseText) === "unsupported") {
+    throw new UnsupportedHookInterpreterError(options.hookPath, baseText.split(/\r?\n/, 1)[0]);
+  }
+  const empty = detectHookInterpreter(baseText) === "empty";
+  const insertionOffset = empty ? 0 : base.insertionOffset ?? base.bytes.length;
+  const managedPrefix = empty ? Buffer.from("#!/bin/sh\n") : base.managedPrefix ?? (insertionOffset === base.bytes.length ? hookSeparator(base.bytes) : Buffer.alloc(0));
+  const retainedPrefix = empty ? Buffer.alloc(0) : base.bytes.subarray(0, insertionOffset);
+  const retainedSuffix = empty ? Buffer.alloc(0) : base.bytes.subarray(insertionOffset);
+  const state = {
+    version: 1,
+    originalExists: base.exists,
+    originalMode: base.exists ? base.mode ?? null : null,
+    managedPrefix: managedPrefix.toString("base64"),
+    displacedBytes: empty && base.exists ? base.bytes.toString("base64") : null
+  };
+  const managedBlock = createManagedBlock(begin, end, options.block, state);
+  const desiredMode = executableHookMode(base.exists ? base.mode : void 0);
+  return {
+    hookPath: options.hookPath,
+    result: { hookPath: options.hookPath, action: range ? "replaced" : "installed", markerId },
+    snapshot,
+    desired: {
+      exists: true,
+      bytes: Buffer.concat([retainedPrefix, managedPrefix, managedBlock, retainedSuffix]),
+      mode: desiredMode
+    },
+    writeRequired: true
+  };
+}
+async function applyPreparedManagedHookBlocks(prepared) {
+  assertDistinctHookPaths(prepared);
+  for (const plan of prepared) {
+    const current = await readHookSnapshot(plan.hookPath);
+    if (!sameHookSnapshot(plan.snapshot, current)) {
+      throw new ConcurrentHookModificationError(plan.hookPath);
+    }
+  }
+  const applied = [];
+  try {
+    for (const plan of prepared) {
+      if (plan.writeRequired) {
+        await applyDesiredState(plan);
+        applied.push(plan);
+      }
+    }
+    return prepared.map((plan) => plan.result);
+  } catch (error) {
+    const rollbackErrors = [];
+    for (const plan of applied.reverse()) {
+      try {
+        await rollbackPreparedHook(plan);
+      } catch (rollbackError) {
+        rollbackErrors.push({ hookPath: plan.hookPath, error: rollbackError });
+      }
+    }
+    if (rollbackErrors.length > 0) {
+      throw new HookTransactionRollbackError(error, rollbackErrors);
+    }
+    throw error;
+  }
 }
 function beginMarker(markerId) {
   return `# >>> ${markerId} managed block >>>`;
@@ -2094,48 +2315,247 @@ function beginMarker(markerId) {
 function endMarker(markerId) {
   return `# <<< ${markerId} managed block <<<`;
 }
-async function readHook(hookPath) {
-  try {
-    return await readFile2(hookPath, "utf-8");
-  } catch (error) {
-    if (error.code === "ENOENT") {
-      return "#!/bin/sh\n";
-    }
-    throw error;
+function createManagedBlock(begin, end, block, state) {
+  const encodedState = Buffer.from(JSON.stringify(state)).toString("base64");
+  return Buffer.from(`${begin}
+${MANAGED_STATE_PREFIX} ${encodedState}
+${block.trimEnd()}
+${end}
+`);
+}
+function assertSupportedHookEntry(hookPath, snapshot) {
+  if (snapshot.kind === "symlink") {
+    throw new SymlinkHookUnsupportedError(hookPath, snapshot.linkTarget ?? "<unknown>");
+  }
+  if (snapshot.kind === "other") {
+    throw new UnsupportedHookTypeError(hookPath);
   }
 }
-async function writeHook(hookPath, content) {
+function assertDistinctHookPaths(prepared) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const plan of prepared) {
+    if (seen.has(plan.hookPath)) {
+      throw new Error(`Duplicate prepared Git hook path: ${plan.hookPath}`);
+    }
+    seen.add(plan.hookPath);
+  }
+}
+function executableHookMode(mode) {
+  if (mode === void 0) {
+    return 493;
+  }
+  return (mode & 73) === 0 ? mode | 64 : mode;
+}
+function hookSeparator(existing) {
+  return existing.at(-1) === 10 ? Buffer.from("\n") : Buffer.from("\n\n");
+}
+function desiredFromSnapshot(snapshot) {
+  return snapshot.kind === "file" ? { exists: true, bytes: snapshot.bytes, mode: snapshotMode(snapshot) } : { exists: false, bytes: Buffer.alloc(0) };
+}
+function snapshotMode(snapshot) {
+  return snapshot.mode === void 0 ? void 0 : Number(snapshot.mode & 0o777n);
+}
+function restoreManagedHook(content, range, currentMode, hookPath) {
+  const state = parseManagedState(content.subarray(range.start, range.end), hookPath);
+  if (!state) {
+    return {
+      exists: true,
+      bytes: Buffer.concat([content.subarray(0, range.start), content.subarray(range.end)]),
+      mode: currentMode,
+      insertionOffset: range.start,
+      managedPrefix: Buffer.alloc(0)
+    };
+  }
+  const managedPrefix = decodeBase64(state.managedPrefix, hookPath, "managedPrefix");
+  const prefixStart = range.start - managedPrefix.length;
+  if (prefixStart < 0 || !content.subarray(prefixStart, range.start).equals(managedPrefix)) {
+    throw new InvalidManagedHookStateError(hookPath, "managed prefix does not match the recorded state");
+  }
+  const displaced = state.displacedBytes === null ? Buffer.alloc(0) : decodeBase64(state.displacedBytes, hookPath, "displacedBytes");
+  const bytes = Buffer.concat([
+    content.subarray(0, prefixStart),
+    displaced,
+    content.subarray(range.end)
+  ]);
+  const exists = state.originalExists || bytes.length > 0;
+  return {
+    exists,
+    bytes,
+    mode: state.originalExists ? state.originalMode ?? void 0 : exists ? currentMode : void 0,
+    insertionOffset: prefixStart + displaced.length,
+    managedPrefix
+  };
+}
+function parseManagedState(managedBlock, hookPath) {
+  const stateLine = managedBlock.toString("utf8").split(/\r?\n/).find((line) => line.startsWith(`${MANAGED_STATE_PREFIX} `));
+  if (!stateLine) {
+    return void 0;
+  }
+  try {
+    const encoded = stateLine.slice(MANAGED_STATE_PREFIX.length + 1).trim();
+    const parsed = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+    if (parsed.version !== 1 || typeof parsed.originalExists !== "boolean" || !(parsed.originalMode === null || Number.isInteger(parsed.originalMode)) || typeof parsed.managedPrefix !== "string" || !(parsed.displacedBytes === null || typeof parsed.displacedBytes === "string")) {
+      throw new Error("unsupported state fields");
+    }
+    if (parsed.originalExists && parsed.originalMode === null) {
+      throw new Error("existing hook state is missing its original mode");
+    }
+    return parsed;
+  } catch (error) {
+    throw new InvalidManagedHookStateError(hookPath, error.message);
+  }
+}
+function decodeBase64(value, hookPath, field) {
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value) {
+    throw new InvalidManagedHookStateError(hookPath, `${field} is not canonical base64`);
+  }
+  return decoded;
+}
+async function readHookSnapshot(hookPath) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    let metadata;
+    try {
+      metadata = await lstat(hookPath, { bigint: true });
+    } catch (error) {
+      if (error.code === "ENOENT") {
+        return { kind: "missing", bytes: Buffer.alloc(0) };
+      }
+      throw error;
+    }
+    if (metadata.isSymbolicLink()) {
+      return {
+        kind: "symlink",
+        bytes: Buffer.alloc(0),
+        dev: metadata.dev,
+        ino: metadata.ino,
+        size: metadata.size,
+        mtimeNs: metadata.mtimeNs,
+        mode: metadata.mode,
+        linkTarget: await readlink(hookPath)
+      };
+    }
+    if (!metadata.isFile()) {
+      return {
+        kind: "other",
+        bytes: Buffer.alloc(0),
+        dev: metadata.dev,
+        ino: metadata.ino,
+        size: metadata.size,
+        mtimeNs: metadata.mtimeNs,
+        mode: metadata.mode
+      };
+    }
+    let handle;
+    try {
+      handle = await open(hookPath, constants2.O_RDONLY | (constants2.O_NOFOLLOW ?? 0));
+      const opened = await handle.stat({ bigint: true });
+      if (opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
+        await handle.close();
+        continue;
+      }
+      const bytes = await handle.readFile();
+      await handle.close();
+      return {
+        kind: "file",
+        bytes,
+        dev: metadata.dev,
+        ino: metadata.ino,
+        size: metadata.size,
+        mtimeNs: metadata.mtimeNs,
+        mode: metadata.mode
+      };
+    } catch (error) {
+      await handle?.close().catch(() => void 0);
+      const code = error.code;
+      if (code === "ENOENT" || code === "ELOOP") {
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw new ConcurrentHookModificationError(hookPath);
+}
+async function applyDesiredState(plan) {
+  if (plan.desired.exists) {
+    await writeHookAtomically(plan.hookPath, plan.desired.bytes, plan.snapshot, plan.desired.mode);
+  } else {
+    await removeHookAtomically(plan.hookPath, plan.snapshot);
+  }
+}
+async function rollbackPreparedHook(plan) {
+  const current = await readHookSnapshot(plan.hookPath);
+  if (!matchesDesiredState(current, plan.desired)) {
+    throw new ConcurrentHookModificationError(plan.hookPath);
+  }
+  if (plan.snapshot.kind === "file") {
+    await writeHookAtomically(plan.hookPath, plan.snapshot.bytes, current, snapshotMode(plan.snapshot));
+  } else {
+    await removeHookAtomically(plan.hookPath, current);
+  }
+}
+function matchesDesiredState(snapshot, desired) {
+  if (!desired.exists) {
+    return snapshot.kind === "missing";
+  }
+  return snapshot.kind === "file" && snapshot.bytes.equals(desired.bytes) && snapshotMode(snapshot) === desired.mode;
+}
+async function removeHookAtomically(hookPath, snapshot) {
+  const current = await readHookSnapshot(hookPath);
+  if (!sameHookSnapshot(snapshot, current)) {
+    throw new ConcurrentHookModificationError(hookPath);
+  }
+  if (current.kind !== "missing") {
+    await unlink(hookPath);
+  }
+}
+async function writeHookAtomically(hookPath, content, snapshot, mode) {
   await mkdir3(dirname2(hookPath), { recursive: true });
-  await writeFile3(hookPath, content.endsWith("\n") ? content : `${content}
-`);
-  await chmod(hookPath, 493);
+  const temporaryPath = join4(dirname2(hookPath), `.${basename(hookPath)}.${randomUUID()}.tmp`);
+  let temporaryExists = false;
+  try {
+    const temporary = await open(temporaryPath, "wx", mode);
+    temporaryExists = true;
+    try {
+      await temporary.writeFile(content);
+      await temporary.chmod(mode);
+      await temporary.sync();
+    } finally {
+      await temporary.close();
+    }
+    const current = await readHookSnapshot(hookPath);
+    if (!sameHookSnapshot(snapshot, current)) {
+      throw new ConcurrentHookModificationError(hookPath);
+    }
+    await rename(temporaryPath, hookPath);
+    temporaryExists = false;
+  } finally {
+    if (temporaryExists) {
+      await unlink(temporaryPath).catch((error) => {
+        if (error.code !== "ENOENT") {
+          throw error;
+        }
+      });
+    }
+  }
+}
+function sameHookSnapshot(expected, actual) {
+  return expected.kind === actual.kind && expected.dev === actual.dev && expected.ino === actual.ino && expected.size === actual.size && expected.mtimeNs === actual.mtimeNs && expected.mode === actual.mode && expected.linkTarget === actual.linkTarget && expected.bytes.equals(actual.bytes);
 }
 function findManagedRange(content, begin, end) {
-  const start = content.indexOf(begin);
+  const start = content.indexOf(Buffer.from(begin));
   if (start < 0) {
     return void 0;
   }
-  const endStart = content.indexOf(end, start + begin.length);
+  const endStart = content.indexOf(Buffer.from(end), start + Buffer.byteLength(begin));
   if (endStart < 0) {
     return void 0;
   }
-  const endLine = content.indexOf("\n", endStart);
+  const endLine = content.indexOf(10, endStart);
   return {
     start,
     end: endLine < 0 ? content.length : endLine + 1
   };
-}
-function appendManagedBlock(existing, managedBlock) {
-  const base = existing.trimEnd();
-  if (base.length === 0) {
-    return managedBlock;
-  }
-  return `${base}
-
-${managedBlock}`;
-}
-function stripExtraBlankLines(content) {
-  return content.replace(/\n{3,}/g, "\n\n");
 }
 
 // src/index.ts
@@ -2155,17 +2575,31 @@ function getArtifactTypeMetadata(schema, type) {
   const definition = schema.types[type];
   const role = normalizeArtifactTypeRole(definition?.role);
   const aliases = Array.isArray(definition?.aliases) ? definition.aliases.filter((alias) => typeof alias === "string" && alias.trim().length > 0) : [];
+  const legacyCoreRoleMatch = isTargetArtifactType(type) && role === type;
+  const targetCapable = definition?.target === true || legacyCoreRoleMatch;
   return {
     type,
     displayName: definition?.displayName?.trim() || type,
     role,
     layer: definition?.layer?.trim() || "context",
     aliases,
-    targetCapable: isTargetArtifactType(type) && role === type
+    targetCapable
   };
 }
 function getTargetArtifactTypes(schema = DEFAULT_SCHEMA) {
-  return TARGET_ARTIFACT_TYPES.filter((type) => getArtifactTypeMetadata(schema, type).targetCapable);
+  const legacy = TARGET_ARTIFACT_TYPES.filter((type) => getArtifactTypeMetadata(schema, type).targetCapable);
+  const extras = Object.keys(schema.types).filter(
+    (type) => getArtifactTypeMetadata(schema, type).targetCapable && !legacy.includes(type)
+  );
+  return [...legacy, ...extras];
+}
+function resolveArtifactTypeName(schema, token) {
+  if (!token) return void 0;
+  if (schema.types[token]) return token;
+  for (const [type, definition] of Object.entries(schema.types)) {
+    if (definition.aliases?.includes(token)) return type;
+  }
+  return void 0;
 }
 var DEFAULT_SCHEMA = {
   types: {
@@ -2208,10 +2642,10 @@ var DEFAULT_SCHEMA = {
   idRanges: {}
 };
 async function loadConfig(root) {
-  const configPath = join4(root, "artifact-graph.config.yaml");
+  const configPath = join5(root, "artifact-graph.config.yaml");
   let parsed = {};
   try {
-    const raw = await readFile3(configPath, "utf-8");
+    const raw = await readFile2(configPath, "utf-8");
     parsed = yaml.load(raw) ?? {};
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -2230,7 +2664,7 @@ async function loadConfig(root) {
     idRanges: mergeRecord(DEFAULT_SCHEMA.idRanges, parsed.idRanges)
   };
 }
-function buildGraph(nodes, edges) {
+function buildGraph(nodes, edges, diagnostics = []) {
   const graphNodes = nodes.map((node) => ({ ...node, uid: toUid(node.type, node.code) }));
   graphNodes.sort(compareNode);
   edges.sort(compareEdge);
@@ -2246,28 +2680,39 @@ function buildGraph(nodes, edges) {
   return {
     nodes: graphNodes,
     edges: dedupedEdges,
-    generatedAt: (/* @__PURE__ */ new Date(0)).toISOString()
+    generatedAt: (/* @__PURE__ */ new Date(0)).toISOString(),
+    diagnostics: diagnostics.sort((left, right) => left.code.localeCompare(right.code) || left.path.localeCompare(right.path) || left.line - right.line)
   };
 }
 async function scanArtifacts(root, schema) {
   const config = schema ?? await loadConfig(root);
   const nodes = [];
   const edges = [];
-  const scannedFiles = /* @__PURE__ */ new Set();
+  const scanDiagnostics = [];
+  const scannedFiles = /* @__PURE__ */ new Map();
   for (const [type, definition] of artifactTypeEntriesBySpecificity(config)) {
     const files = await findFiles(root, definition.paths);
     for (const file of files) {
       if (scannedFiles.has(file)) {
+        const existingType = scannedFiles.get(file);
+        scanDiagnostics.push(issue(
+          "ARTIFACT_PATH_OVERLAP",
+          `File ${file} matched by both ${existingType} and ${type}; using most specific type`,
+          file,
+          1,
+          { severity: "warning" }
+        ));
         continue;
       }
-      scannedFiles.add(file);
-      const raw = await readFile3(join4(root, file), "utf-8");
-      const parsed = parseFile(type, file, raw);
+      scannedFiles.set(file, type);
+      const raw = await readFile2(join5(root, file), "utf-8");
+      const parsed = parseFile(type, file, raw, config);
       nodes.push(...parsed.nodes);
       edges.push(...parsed.edges);
+      scanDiagnostics.push(...parsed.diagnostics);
     }
   }
-  const graph = buildGraph(nodes, edges);
+  const graph = buildGraph(nodes, edges, scanDiagnostics);
   return resolveMatrixEdges(graph);
 }
 function artifactTypeEntriesBySpecificity(schema) {
@@ -2376,6 +2821,7 @@ function validateGraph(graph, schema = DEFAULT_SCHEMA) {
   }
   issues.push(...validateE2eTests(graph));
   issues.push(...validateE2eRegistry(graph));
+  issues.push(...validateScenarioPrdLinks(graph, schema));
   issues.push(...validateCodeCommentTraceabilityFormat(graph));
   issues.push(...validateCodeCommentScenarioFeatureConsistency(graph));
   for (const edge2 of graph.edges) {
@@ -2426,7 +2872,181 @@ function validateGraph(graph, schema = DEFAULT_SCHEMA) {
   for (const cycle of findDependsOnCycles(graph)) {
     issues.push(issue("CYCLE_DETECTED", `depends_on cycle detected: ${cycle.join(" -> ")}`, "", 1, { node: cycle[0] }));
   }
+  const defaultTypeKeys = new Set(Object.keys(DEFAULT_SCHEMA.types));
+  const specializedParserTypes = /* @__PURE__ */ new Set([
+    "feature",
+    "scenario",
+    "entity",
+    "decision",
+    "test",
+    "design",
+    "e2e_test",
+    "e2e_registry",
+    "rule-golden-cases",
+    "test-strategy",
+    "traceability-matrix-v2",
+    "traceability-version-lock",
+    "interface_contracts",
+    "data_contracts",
+    "application_state_machines",
+    "error_model",
+    "domain-glossary",
+    "bounded-context-map",
+    "domain-invariants",
+    "generation-packet-spec",
+    "report-contracts",
+    "verification-fixtures",
+    "ui-flow-contracts",
+    "non-functional-budgets",
+    "implementation-blueprint"
+  ]);
+  const uidsWithEdges = /* @__PURE__ */ new Set();
+  for (const edge2 of graph.edges) {
+    uidsWithEdges.add(edge2.from);
+    uidsWithEdges.add(edge2.to);
+  }
+  for (const node of graph.nodes) {
+    if (defaultTypeKeys.has(node.type)) continue;
+    if (specializedParserTypes.has(node.type)) continue;
+    if (!schema.types[node.type]) continue;
+    if (!uidsWithEdges.has(node.uid)) {
+      issues.push(issue(
+        "CUSTOM_ARTIFACT_ISOLATED",
+        `Custom artifact ${node.uid} has no incoming or outgoing traceability edges`,
+        node.path,
+        node.line,
+        { node: node.uid, severity: "warning" }
+      ));
+    }
+  }
+  issues.push(...graph.diagnostics ?? []);
   issues.sort((left, right) => left.code.localeCompare(right.code) || left.path.localeCompare(right.path) || left.line - right.line);
+  return issues;
+}
+function validateScenarioPrdLinks(graph, schema = DEFAULT_SCHEMA) {
+  if (!schema.relationFields.scenario?.includes("\u5173\u8054\u529F\u80FD") || !schema.relationFields.feature?.includes("scenarios")) {
+    return [];
+  }
+  const issues = [];
+  const featurePattern = new RegExp(schema.idPatterns.feature ?? DEFAULT_SCHEMA.idPatterns.feature);
+  const scenarioPattern = new RegExp(schema.idPatterns.scenario ?? DEFAULT_SCHEMA.idPatterns.scenario);
+  const scenarioNodes = graph.nodes.filter((node) => node.type === "scenario");
+  const featureNodes = graph.nodes.filter((node) => node.type === "feature");
+  const scenarioMap = new Map(scenarioNodes.map((node) => [node.uid, node]));
+  const featureMap = new Map(featureNodes.map((node) => [node.uid, node]));
+  const scenarioFeatureRefs = /* @__PURE__ */ new Map();
+  const featureScenarioRefs = /* @__PURE__ */ new Map();
+  for (const node of scenarioNodes) {
+    scenarioFeatureRefs.set(node.uid, relationOccurrences(node, "\u5173\u8054\u529F\u80FD", "feature"));
+    if (!scenarioPattern.test(node.code)) {
+      issues.push(issue("FORMAT_ERROR", `scenario ID ${node.code} does not match ${schema.idPatterns.scenario}`, node.path, node.line, { node: node.uid }));
+    }
+  }
+  for (const node of featureNodes) {
+    featureScenarioRefs.set(node.uid, relationOccurrences(node, "scenarios", "scenario"));
+    if (!featurePattern.test(node.code)) {
+      issues.push(issue("FORMAT_ERROR", `feature ID ${node.code} does not match ${schema.idPatterns.feature}`, node.path, node.line, { node: node.uid }));
+    }
+  }
+  for (const [scenarioUid, refs] of scenarioFeatureRefs) {
+    const node = scenarioMap.get(scenarioUid);
+    if (!node) continue;
+    const validRefs = refs.filter((ref) => featurePattern.test(ref.target));
+    if (validRefs.length === 0) {
+      issues.push(issue("ORPHAN_SCENARIO", `${scenarioUid} has no linked PRD feature`, node.path, node.line, { node: scenarioUid, severity: "warning" }));
+    }
+    pushDuplicateIssues(issues, scenarioUid, validRefs, "feature");
+    for (const ref of refs) {
+      if (!featurePattern.test(ref.target)) {
+        issues.push(issue("FORMAT_ERROR", `scenario ${scenarioUid} has invalid feature reference ${ref.target}`, ref.path, ref.line, { node: scenarioUid }));
+      }
+    }
+  }
+  for (const [featureUid, refs] of featureScenarioRefs) {
+    const node = featureMap.get(featureUid);
+    if (!node) continue;
+    const validRefs = refs.filter((ref) => scenarioPattern.test(ref.target));
+    if (validRefs.length === 0 && node.status !== "planned" && node.status !== "deprecated") {
+      issues.push(issue("ORPHAN_FEATURE", `${featureUid} has no linked scenario`, node.path, node.line, { node: featureUid, severity: "warning" }));
+    }
+    pushDuplicateIssues(issues, featureUid, validRefs, "scenario");
+    for (const ref of refs) {
+      if (!scenarioPattern.test(ref.target)) {
+        issues.push(issue("FORMAT_ERROR", `feature ${featureUid} has invalid scenario reference ${ref.target}`, ref.path, ref.line, { node: featureUid }));
+      }
+    }
+  }
+  for (const [scenarioUid, refs] of scenarioFeatureRefs) {
+    for (const ref of refs) {
+      if (!featurePattern.test(ref.target)) continue;
+      const featureUid = toUid("feature", ref.target);
+      if (!featureMap.has(featureUid)) continue;
+      const reverseRefs = featureScenarioRefs.get(featureUid) ?? [];
+      if (!reverseRefs.some((reverse) => toUid("scenario", reverse.target) === scenarioUid)) {
+        issues.push(issue(
+          "LINK_FORWARD_MISSING",
+          `${scenarioUid} references ${featureUid}, but ${featureUid}.scenarios does not include ${scenarioUid}`,
+          ref.path,
+          ref.line,
+          { node: scenarioUid }
+        ));
+      }
+    }
+  }
+  for (const [featureUid, refs] of featureScenarioRefs) {
+    for (const ref of refs) {
+      if (!scenarioPattern.test(ref.target)) continue;
+      const scenarioUid = toUid("scenario", ref.target);
+      if (!scenarioMap.has(scenarioUid)) continue;
+      const reverseRefs = scenarioFeatureRefs.get(scenarioUid) ?? [];
+      if (!reverseRefs.some((reverse) => toUid("feature", reverse.target) === featureUid)) {
+        issues.push(issue(
+          "LINK_BACKWARD_MISSING",
+          `${featureUid} covers ${scenarioUid}, but ${scenarioUid} does not reference ${featureUid}`,
+          ref.path,
+          ref.line,
+          { node: featureUid }
+        ));
+      }
+    }
+  }
+  return issues;
+}
+async function validateScenarioPrdLinkIndex(root, graph) {
+  const indexPath = "artifacts/prd/feature-index.md";
+  let raw = "";
+  try {
+    raw = await readFile2(join5(root, indexPath), "utf-8");
+  } catch (error) {
+    if (error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const featureNodes = new Map(graph.nodes.filter((node) => node.type === "feature").map((node) => [node.code, node]));
+  const issues = [];
+  raw.split(/\r?\n/).forEach((line, index) => {
+    const match = /\|\s*\[([A-Z]{1,4}\d+)\]\([^)]*\)\s*\|[^|]*\|[^|]*\|[^|]*\|\s*(\d+)\s*\|/.exec(line);
+    if (!match) {
+      return;
+    }
+    const featureCode = match[1];
+    const expectedCount = Number(match[2]);
+    const feature = featureNodes.get(featureCode);
+    if (!feature) {
+      return;
+    }
+    const actualCount = relationOccurrences(feature, "scenarios", "scenario").length;
+    if (actualCount !== expectedCount) {
+      issues.push(issue(
+        "INDEX_MISMATCH",
+        `feature:${featureCode} index scenario count=${expectedCount}, actual=${actualCount}`,
+        indexPath,
+        index + 1,
+        { node: feature.uid, severity: "warning" }
+      ));
+    }
+  });
   return issues;
 }
 function validateCodeCommentTraceabilityFormat(graph) {
@@ -2575,11 +3195,11 @@ function nextId(graph, schema, type, rangeName) {
   throw new Error(`ID range ${type}.${rangeName} is exhausted`);
 }
 async function writeGraphCache(root, graph) {
-  const cacheDir = join4(root, ".artifact-graph");
+  const cacheDir = join5(root, ".artifact-graph");
   await mkdir4(cacheDir, { recursive: true });
-  await writeFile4(join4(cacheDir, "index.json"), `${JSON.stringify(graph, null, 2)}
+  await writeFile3(join5(cacheDir, "index.json"), `${JSON.stringify(graph, null, 2)}
 `);
-  const db = new Database(join4(cacheDir, "graph.sqlite"));
+  const db = new Database(join5(cacheDir, "graph.sqlite"));
   try {
     db.exec(`
       DROP TABLE IF EXISTS nodes;
@@ -2619,74 +3239,182 @@ async function writeGraphCache(root, graph) {
     db.close();
   }
 }
-function parseFile(type, path, raw) {
+function parseFile(type, path, raw, schema = DEFAULT_SCHEMA) {
   if (type === "feature") {
-    return parseFeature(path, raw);
+    return { ...parseFeature(path, raw), diagnostics: [] };
   }
   if (type === "scenario") {
-    return parseScenarios(path, raw);
+    return { ...parseScenarios(path, raw, schema), diagnostics: [] };
   }
   if (type === "entity") {
-    return parseEntityRegistry(path, raw);
+    return { ...parseEntityRegistry(path, raw), diagnostics: [] };
   }
   if (type === "decision") {
-    return parseDecisions(path, raw);
+    return { ...parseDecisions(path, raw), diagnostics: [] };
   }
   if (type === "test") {
-    return parseTest(path, raw);
+    return { ...parseTest(path, raw, schema), diagnostics: [] };
   }
   if (type === "design") {
-    return parseDesign(path, raw);
+    return { ...parseDesign(path, raw), diagnostics: [] };
   }
   if (type === "e2e_test") {
-    return parseE2eTest(path, raw);
+    return { ...parseE2eTest(path, raw), diagnostics: [] };
   }
   if (type === "e2e_registry") {
-    return parseE2eRegistry(path, raw);
+    return { ...parseE2eRegistry(path, raw), diagnostics: [] };
   }
   if (type === "interface_contracts" || type === "data_contracts" || type === "application_state_machines" || type === "error_model") {
-    return parseContractTable(type, path, raw);
+    return { ...parseContractTable(type, path, raw), diagnostics: [] };
   }
   if (type === "domain-glossary") {
-    return parseDomainGlossary(path, raw);
+    return { ...parseDomainGlossary(path, raw), diagnostics: [] };
   }
   if (type === "bounded-context-map") {
-    return parseBoundedContextMap(path, raw);
+    return { ...parseBoundedContextMap(path, raw), diagnostics: [] };
   }
   if (type === "domain-invariants") {
-    return parseContractTable(type, path, raw);
+    return { ...parseContractTable(type, path, raw), diagnostics: [] };
   }
   if (type === "generation-packet-spec") {
-    return parseGenerationPacketSpec(path, raw);
+    return { ...parseGenerationPacketSpec(path, raw), diagnostics: [] };
   }
   if (type === "rule-golden-cases") {
-    return parseRuleGoldenCases(path, raw);
+    return { ...parseRuleGoldenCases(path, raw), diagnostics: [] };
   }
   if (type === "test-strategy") {
-    return parseTestStrategy(path, raw);
+    return { ...parseTestStrategy(path, raw), diagnostics: [] };
   }
   if (type === "traceability-matrix-v2") {
-    return parseTraceabilityMatrixV2(path, raw);
+    return { ...parseTraceabilityMatrixV2(path, raw), diagnostics: [] };
   }
   if (type === "traceability-version-lock") {
-    return parseTraceabilityVersionLock(path, raw);
+    return { ...parseTraceabilityVersionLock(path, raw), diagnostics: [] };
   }
   if (type === "report-contracts") {
-    return parseReportContracts(path, raw);
+    return { ...parseReportContracts(path, raw), diagnostics: [] };
   }
   if (type === "verification-fixtures") {
-    return parseVerificationFixtures(path, raw);
+    return { ...parseVerificationFixtures(path, raw), diagnostics: [] };
   }
   if (type === "ui-flow-contracts") {
-    return parseUIFlowContracts(path, raw);
+    return { ...parseUIFlowContracts(path, raw), diagnostics: [] };
   }
   if (type === "non-functional-budgets") {
-    return parseNonFunctionalBudgets(path, raw);
+    return { ...parseNonFunctionalBudgets(path, raw), diagnostics: [] };
   }
   if (type === "implementation-blueprint") {
-    return parseImplementationBlueprint(path, raw);
+    return { ...parseImplementationBlueprint(path, raw), diagnostics: [] };
   }
-  return { nodes: [], edges: [] };
+  return parseGenericMarkdown(type, path, raw, schema);
+}
+function parseGenericMarkdown(type, path, raw, schema) {
+  const diagnostics = [];
+  const ext = extname(path).toLowerCase();
+  if (ext !== ".md" && ext !== ".markdown") {
+    diagnostics.push(issue(
+      "UNSUPPORTED_FORMAT",
+      `Generic parser only supports .md/.markdown files, got ${ext}`,
+      path,
+      1,
+      { severity: "warning" }
+    ));
+    return { nodes: [], edges: [], diagnostics };
+  }
+  const parsed = matter(raw);
+  const data = parsed.data;
+  const code = String(data.id ?? "").trim();
+  if (!code) {
+    diagnostics.push(issue(
+      "ARTIFACT_ID_MISSING",
+      `Artifact of type ${type} at ${path} has no id in frontmatter`,
+      path,
+      1,
+      { severity: "warning" }
+    ));
+    return { nodes: [], edges: [], diagnostics };
+  }
+  const idPattern = schema.idPatterns[type];
+  if (idPattern && !new RegExp(idPattern).test(code)) {
+    diagnostics.push(issue(
+      "INVALID_ID",
+      `Artifact ${type}:${code} does not match ${idPattern}`,
+      path,
+      1,
+      { node: toUid(type, code) }
+    ));
+  }
+  const title = String(data.title ?? headingTitle(raw, code) ?? code);
+  const typeDef = schema.types[type];
+  const extraFields = typeDef?.extraFields ?? [];
+  const indexedFields = {};
+  for (const field of extraFields) {
+    const value = data[field.name];
+    if (value === void 0) continue;
+    let mismatch = false;
+    switch (field.type) {
+      case "string":
+        if (typeof value !== "string") mismatch = true;
+        break;
+      case "number":
+        if (typeof value !== "number") mismatch = true;
+        break;
+      case "boolean":
+        if (typeof value !== "boolean") mismatch = true;
+        break;
+      case "enum":
+        if (!field.enum?.includes(value)) mismatch = true;
+        break;
+    }
+    if (mismatch) {
+      diagnostics.push(issue(
+        "EXTRA_FIELD_TYPE_MISMATCH",
+        `Field ${field.name} expects ${field.type}${field.type === "enum" ? ` [${field.enum?.join(", ")}]` : ""} but got ${JSON.stringify(value)}`,
+        path,
+        1,
+        { node: toUid(type, code), severity: "warning" }
+      ));
+    } else {
+      indexedFields[field.name] = value;
+    }
+  }
+  const edges = [];
+  for (const [fieldKey, fieldValue] of Object.entries(data)) {
+    if (!fieldKey.startsWith("related_")) continue;
+    const suffix = fieldKey.slice("related_".length);
+    const resolvedType = resolveArtifactTypeName(schema, suffix);
+    if (!resolvedType) continue;
+    const targets = toArray(fieldValue);
+    const targetPattern = schema.idPatterns[resolvedType];
+    for (const target of targets) {
+      const targetCode = String(target).trim();
+      if (!targetCode) continue;
+      if (targetPattern && !new RegExp(targetPattern).test(targetCode)) {
+        diagnostics.push(issue(
+          "INVALID_ID",
+          `Relation target ${resolvedType}:${targetCode} in ${fieldKey} does not match ${targetPattern}`,
+          path,
+          1,
+          { node: toUid(type, code) }
+        ));
+        continue;
+      }
+      edges.push(edge(toUid(type, code), toUid(resolvedType, targetCode), "references", "frontmatter", path, 1));
+    }
+  }
+  const node = {
+    type,
+    code,
+    title,
+    path,
+    line: 1,
+    status: typeof data.status === "string" ? data.status : void 0,
+    attrs: {
+      rawFrontmatter: data,
+      indexedFields
+    }
+  };
+  return { nodes: [node], edges, diagnostics };
 }
 function parseFeature(path, raw) {
   const parsed = matter(raw);
@@ -2703,7 +3431,13 @@ function parseFeature(path, raw) {
     path,
     line: 1,
     status: typeof data.status === "string" ? data.status : void 0,
-    attrs: { ...data, acceptanceCriteria: parseAcceptanceCriteria(raw) }
+    attrs: {
+      ...data,
+      acceptanceCriteria: parseAcceptanceCriteria(raw),
+      relationOccurrences: {
+        scenarios: frontmatterRelationOccurrences(path, "scenarios", data.scenarios, "scenario")
+      }
+    }
   };
   const edges = [
     ...frontmatterEdges(path, code, data.scenarios, "scenario", "covers"),
@@ -2713,7 +3447,7 @@ function parseFeature(path, raw) {
   ];
   return { nodes: [node], edges };
 }
-function parseScenarios(path, raw) {
+function parseScenarios(path, raw, schema = DEFAULT_SCHEMA) {
   const lines = raw.split(/\r?\n/);
   const starts = [];
   lines.forEach((line, index) => {
@@ -2728,10 +3462,26 @@ function parseScenarios(path, raw) {
     const start = starts[i];
     const end = starts[i + 1]?.index ?? lines.length;
     const block = lines.slice(start.index, end);
-    nodes.push({ type: "scenario", code: start.code, title: start.title, path, line: start.line });
-    edges.push(...markdownLineEdges(path, start, block, "\u5173\u8054\u529F\u80FD", "feature", "references"));
-    edges.push(...markdownLineEdges(path, start, block, "\u5173\u8054\u51B3\u7B56", "decision", "references"));
-    edges.push(...markdownLineEdges(path, start, block, "\u5173\u8054\u5B9E\u4F53", "entity", "references"));
+    const featureRefs = markdownRelationOccurrences(path, start, block, "\u5173\u8054\u529F\u80FD", "feature");
+    const decisionRefs = markdownRelationOccurrences(path, start, block, "\u5173\u8054\u51B3\u7B56", "decision");
+    const entityRefs = markdownRelationOccurrences(path, start, block, "\u5173\u8054\u5B9E\u4F53", "entity");
+    nodes.push({
+      type: "scenario",
+      code: start.code,
+      title: start.title,
+      path,
+      line: start.line,
+      attrs: {
+        relationOccurrences: {
+          "\u5173\u8054\u529F\u80FD": featureRefs,
+          "\u5173\u8054\u51B3\u7B56": decisionRefs,
+          "\u5173\u8054\u5B9E\u4F53": entityRefs
+        }
+      }
+    });
+    edges.push(...featureRefs.filter(isValidRelationOccurrence).map((ref) => edge(toUid("scenario", start.code), toUid("feature", ref.target), "references", "markdown", path, ref.line)));
+    edges.push(...decisionRefs.filter(isValidRelationOccurrence).map((ref) => edge(toUid("scenario", start.code), toUid("decision", ref.target), "references", "markdown", path, ref.line)));
+    edges.push(...entityRefs.filter(isValidRelationOccurrence).map((ref) => edge(toUid("scenario", start.code), toUid("entity", ref.target), "references", "markdown", path, ref.line)));
   }
   return { nodes, edges };
 }
@@ -2752,25 +3502,56 @@ function parseEntityRegistry(path, raw) {
   return { nodes, edges };
 }
 function parseDecisions(path, raw) {
+  const parsed = matter(raw);
+  const data = parsed.data;
+  const code = String(data.id ?? "").trim();
+  if (code) {
+    const title = String(data.title ?? headingTitle(raw, code) ?? code);
+    const node = {
+      type: "decision",
+      code,
+      title,
+      path,
+      line: 1,
+      status: typeof data.status === "string" ? data.status : void 0,
+      attrs: { ...data }
+    };
+    const edges = [
+      ...decisionFrontmatterEdges(path, code, data.related_features, "feature", "references"),
+      ...decisionFrontmatterEdges(path, code, data.related_scenarios, "scenario", "references")
+    ];
+    return { nodes: [node], edges };
+  }
   const seen = /* @__PURE__ */ new Set();
   const nodes = [];
   raw.split(/\r?\n/).forEach((line, index) => {
-    for (const code of extractCodes(line, "decision")) {
-      if (seen.has(code)) {
+    for (const decisionCode of extractCodes(line, "decision")) {
+      if (seen.has(decisionCode)) {
         continue;
       }
-      seen.add(code);
-      nodes.push({ type: "decision", code, title: titleNearCode(line, code), path, line: index + 1 });
+      seen.add(decisionCode);
+      nodes.push({ type: "decision", code: decisionCode, title: titleNearCode(line, decisionCode), path, line: index + 1 });
     }
   });
   return { nodes, edges: [] };
 }
-function parseTest(path, raw) {
+function isTestFile(filePath) {
+  const normalized = filePath.replace(/\\/g, "/");
+  const name = basename2(normalized);
+  if (/\.(test|spec)\.[^.]+$/.test(name)) return true;
+  if (/(^|\/)(tests|test|__tests__)\//.test(normalized)) return true;
+  if (/\w+Tests?\.java$/.test(name)) return true;
+  return false;
+}
+function parseTest(path, raw, schema = DEFAULT_SCHEMA) {
   const nodes = [];
   const edges = [];
-  const traceabilityComments = scanTraceabilityComments(raw);
+  const traceabilityComments = scanTraceabilityComments(raw, schema);
+  const isTest = isTestFile(path);
+  const nodeType = isTest ? "test" : "implementation";
+  const edgeKind = isTest ? "verifies" : "implements";
   const node = {
-    type: "test",
+    type: nodeType,
     code: path,
     title: path.split("/").at(-1) ?? path,
     path,
@@ -2780,17 +3561,10 @@ function parseTest(path, raw) {
   let hasTags = false;
   for (const { tags, lineNumber } of traceabilityComments.canonical) {
     hasTags = true;
-    for (const code of tags.scenario ?? []) {
-      edges.push(edge(toUid("test", path), toUid("scenario", code), "verifies", "test-comment", path, lineNumber));
-    }
-    for (const code of tags.feature ?? []) {
-      edges.push(edge(toUid("test", path), toUid("feature", code), "verifies", "test-comment", path, lineNumber));
-    }
-    for (const code of tags.entity ?? []) {
-      edges.push(edge(toUid("test", path), toUid("entity", code), "verifies", "test-comment", path, lineNumber));
-    }
-    for (const code of tags.decision ?? []) {
-      edges.push(edge(toUid("test", path), toUid("decision", code), "verifies", "test-comment", path, lineNumber));
+    for (const [tagType, codes] of Object.entries(tags)) {
+      for (const code of codes ?? []) {
+        edges.push(edge(toUid(nodeType, path), toUid(tagType, code), edgeKind, "test-comment", path, lineNumber));
+      }
     }
   }
   if (hasTags || traceabilityComments.invalid.length > 0) {
@@ -2798,11 +3572,11 @@ function parseTest(path, raw) {
   }
   return { nodes, edges };
 }
-function scanTraceabilityComments(raw) {
+function scanTraceabilityComments(raw, schema = DEFAULT_SCHEMA) {
   const canonical = [];
   const invalid = [];
   for (const comment of scanCodeComments(raw)) {
-    if (!containsTraceabilityTag(comment.text)) {
+    if (!containsTraceabilityTag(comment.text, schema)) {
       continue;
     }
     if (comment.kind === "block") {
@@ -2813,7 +3587,7 @@ function scanTraceabilityComments(raw) {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: "traceability tags must use standalone // comments" });
       continue;
     }
-    const parsed = parseTraceabilityTagLine(comment.text.trim());
+    const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
     } else {
@@ -2821,14 +3595,14 @@ function scanTraceabilityComments(raw) {
     }
   }
   for (const comment of scanMarkdownComments(raw)) {
-    if (!containsTraceabilityTag(comment.text)) {
+    if (!containsTraceabilityTag(comment.text, schema)) {
       continue;
     }
     if (!comment.standalone) {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: "traceability tags in markdown must use standalone HTML comments" });
       continue;
     }
-    const parsed = parseTraceabilityTagLine(comment.text.trim());
+    const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
     } else {
@@ -2910,54 +3684,79 @@ function scanMarkdownComments(raw) {
   });
   return comments;
 }
-function parseTraceabilityTagLine(text) {
+function parseTraceabilityTagLine(text, schema = DEFAULT_SCHEMA) {
   const trimmed = text.trim();
-  if (!/^@(scenario|feature|entity|decision)\b/.test(trimmed)) {
-    return { valid: false, reason: "traceability line must start with @scenario, @feature, @entity, or @decision" };
+  const coreTags = ["scenario", "feature", "entity", "decision"];
+  const allTypeAndAliasTokens = new Set(coreTags);
+  for (const [type, definition] of Object.entries(schema.types)) {
+    allTypeAndAliasTokens.add(type);
+    for (const alias of definition.aliases ?? []) {
+      allTypeAndAliasTokens.add(alias);
+    }
+  }
+  const escapedTokens = [...allTypeAndAliasTokens].sort((a, b) => b.length - a.length).map((t) => t.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&"));
+  const tagPattern = new RegExp(`@(${escapedTokens.join("|")})\\b`, "g");
+  const firstMatch = tagPattern.exec(trimmed);
+  if (!firstMatch || firstMatch.index !== 0) {
+    return { valid: false, reason: "traceability line must start with a recognized @type tag" };
   }
   const tags = {};
-  const tagPattern = /@(scenario|feature|entity|decision)\b/g;
-  const matches = [...trimmed.matchAll(tagPattern)];
-  for (let index = 0; index < matches.length; index += 1) {
-    const match = matches[index];
-    const tag = match[1];
-    const valueStart = (match.index ?? 0) + match[0].length;
-    const valueEnd = index + 1 < matches.length ? matches[index + 1].index ?? trimmed.length : trimmed.length;
-    const value = trimmed.slice(valueStart, valueEnd);
-    const codes = extractTraceabilityCodes(value, tag);
-    if (codes.length === 0) {
-      return { valid: false, reason: `traceability tag @${tag} must contain at least one valid ID` };
+  const allMatches = [...trimmed.matchAll(new RegExp(tagPattern.source, tagPattern.flags))];
+  for (let index = 0; index < allMatches.length; index += 1) {
+    const match = allMatches[index];
+    const rawTag = match[1];
+    const resolvedType = resolveArtifactTypeName(schema, rawTag);
+    if (!resolvedType) {
+      return { valid: false, reason: `unknown traceability type @${rawTag}` };
     }
-    tags[tag] = [...tags[tag] ?? [], ...codes];
+    const valueStart = (match.index ?? 0) + match[0].length;
+    const valueEnd = index + 1 < allMatches.length ? allMatches[index + 1].index ?? trimmed.length : trimmed.length;
+    const value = trimmed.slice(valueStart, valueEnd);
+    const codes = extractTraceabilityCodes(value, resolvedType, schema);
+    if (codes.length === 0) {
+      return { valid: false, reason: `traceability tag @${rawTag} must contain at least one valid ID` };
+    }
+    tags[resolvedType] = [...tags[resolvedType] ?? [], ...codes];
   }
   return { valid: true, tags };
 }
-function extractTraceabilityCodes(text, tag) {
+function extractTraceabilityCodes(text, resolvedType, schema = DEFAULT_SCHEMA) {
   const trimmed = text.trim();
   if (!trimmed) {
     return [];
   }
   const tokens = trimmed.split(/[\s,]+/).filter(Boolean);
-  const expanded = tokens.flatMap((value) => expandTraceabilityToken(value, tag));
+  const expanded = tokens.flatMap((value) => expandTraceabilityToken(value, resolvedType, schema));
   if (expanded.length === 0 || expanded.includes("")) {
     return [];
   }
   return [...new Set(expanded)];
 }
-function expandTraceabilityToken(value, tag) {
-  if (!traceabilityTokenPattern(tag).test(value)) {
+function expandTraceabilityToken(value, resolvedType, schema = DEFAULT_SCHEMA) {
+  if (!traceabilityTokenPattern(resolvedType, schema).test(value)) {
     return [""];
   }
   return expandCodeRange(value);
 }
-function traceabilityTokenPattern(tag) {
-  const patterns = {
+function traceabilityTokenPattern(resolvedType, schema = DEFAULT_SCHEMA) {
+  const corePatterns = {
     decision: /^D-[A-Z]+-\d+$/,
     entity: /^E-\d{3,}(?:~(?:E-)?\d{3,})?$/,
     feature: /^(?!AC\d+$)[A-Z]{1,4}\d+(?:~(?:[A-Z]{1,4})?\d+)?$/,
     scenario: /^S-\d+[a-z]?(?:~(?:S-)?\d+[a-z]?)?$/
   };
-  return patterns[tag];
+  const schemaOverride = schema.idPatterns[resolvedType];
+  const defaultPattern = DEFAULT_SCHEMA.idPatterns[resolvedType];
+  if (schemaOverride && schemaOverride !== defaultPattern) {
+    return new RegExp(schemaOverride);
+  }
+  if (corePatterns[resolvedType]) {
+    return corePatterns[resolvedType];
+  }
+  if (schemaOverride) {
+    return new RegExp(schemaOverride);
+  }
+  return /(?!)/;
 }
 function expandCodeRange(value) {
   const range = value.match(/^([A-Z-]+)(\d+)([a-z]?)~([A-Z-]+)?(\d+)([a-z]?)$/);
@@ -2976,8 +3775,8 @@ function expandCodeRange(value) {
   const width = startRaw.length;
   return Array.from({ length: end - start + 1 }, (_, index) => `${prefix}${String(start + index).padStart(width, "0")}`);
 }
-function containsTraceabilityTag(value) {
-  return value.includes("@scenario") || value.includes("@feature") || value.includes("@entity") || value.includes("@decision");
+function containsTraceabilityTag(value, schema = DEFAULT_SCHEMA) {
+  return /@[\w][\w-]*\b/.test(value);
 }
 function parseDesign(path, raw) {
   const parsed = matter(raw);
@@ -3012,7 +3811,7 @@ function parseE2eTest(path, raw) {
   });
   const nodes = [];
   const edges = [];
-  const batch = String(data.test_batch ?? basename(path, extname(path))).trim();
+  const batch = String(data.test_batch ?? basename2(path, extname(path))).trim();
   const frontmatterScenarios = toArray(data.related_scenarios).map((value) => String(value).trim()).filter(Boolean);
   const scopeFeatures = extractCodes(String(data.scope ?? ""), "feature");
   const frontmatterFeatures = [.../* @__PURE__ */ new Set([...Object.keys(asRecord(data.ac_coverage)), ...scopeFeatures])];
@@ -3085,7 +3884,7 @@ function parseE2eRegistry(path, raw) {
     data = { parseError: error.message };
   }
   return {
-    nodes: [{ type: "e2e_registry", code: basename(path, extname(path)), title: "E2E Test Registry", path, line: 1, attrs: data }],
+    nodes: [{ type: "e2e_registry", code: basename2(path, extname(path)), title: "E2E Test Registry", path, line: 1, attrs: data }],
     edges: []
   };
 }
@@ -3821,6 +4620,9 @@ function frontmatterEdges(path, featureCode, value, targetType, kind, normalize 
     return [edge(toUid("feature", featureCode), toUid(targetType, code), kind, "frontmatter", path, 1)];
   });
 }
+function frontmatterRelationOccurrences(path, field, value, targetType) {
+  return toArray(value).map((target) => String(target).trim()).filter(Boolean).map((target) => ({ field, targetType, target, path, line: 1 }));
+}
 function designFrontmatterEdges(path, designCode, value, targetType, kind) {
   return toArray(value).flatMap((target) => {
     const code = String(target).trim();
@@ -3830,18 +4632,97 @@ function designFrontmatterEdges(path, designCode, value, targetType, kind) {
     return [edge(toUid("design", designCode), toUid(targetType, code), kind, "frontmatter", path, 1)];
   });
 }
-function markdownLineEdges(path, scenario, block, label, targetType, kind) {
+function decisionFrontmatterEdges(path, decisionCode, value, targetType, kind) {
+  return toArray(value).flatMap((target) => {
+    const code = String(target).trim();
+    if (!code) {
+      return [];
+    }
+    return [edge(toUid("decision", decisionCode), toUid(targetType, code), kind, "frontmatter", path, 1)];
+  });
+}
+function markdownRelationOccurrences(path, scenario, block, label, targetType, schema) {
   const result = [];
   block.forEach((line, index) => {
     if (!line.includes(label)) {
       return;
     }
     const relationText = line.split(/[:：]/).slice(1).join(":").split(/\s+[—-]\s+/)[0] ?? line;
-    for (const code of extractCodes(relationText, targetType)) {
-      result.push(edge(toUid("scenario", scenario.code), toUid(targetType, code), kind, "markdown", path, scenario.index + index + 1));
+    const lineNumber = scenario.index + index + 1;
+    const codes = extractCodes(relationText, targetType, schema);
+    for (const code of codes) {
+      result.push({ field: label, targetType, target: code, path, line: lineNumber, raw: relationText.trim() });
+    }
+    for (const invalid of invalidRelationCandidates(relationText, targetType, codes)) {
+      result.push({ field: label, targetType, target: invalid, path, line: lineNumber, raw: relationText.trim() });
     }
   });
   return result;
+}
+function relationOccurrences(node, field, targetType) {
+  const relationRecord = asRecord(node.attrs?.relationOccurrences);
+  const rawOccurrences = toArray(relationRecord[field]);
+  return rawOccurrences.flatMap((value) => {
+    if (typeof value === "string") {
+      return [{ field, targetType, target: value, path: node.path, line: node.line }];
+    }
+    const record = asRecord(value);
+    const target = String(record.target ?? "").trim();
+    if (!target) {
+      return [];
+    }
+    return [{
+      field: String(record.field ?? field),
+      targetType: String(record.targetType ?? targetType),
+      target,
+      path: typeof record.path === "string" ? record.path : node.path,
+      line: typeof record.line === "number" ? record.line : node.line,
+      raw: typeof record.raw === "string" ? record.raw : void 0
+    }];
+  });
+}
+function pushDuplicateIssues(issues, nodeUid, refs, targetType) {
+  const seen = /* @__PURE__ */ new Set();
+  for (const ref of refs) {
+    const targetUid = toUid(targetType, ref.target);
+    if (seen.has(targetUid)) {
+      issues.push(issue("DUPLICATE", `${nodeUid} repeats ${targetUid}`, ref.path, ref.line, { node: nodeUid }));
+    }
+    seen.add(targetUid);
+  }
+}
+function isValidRelationOccurrence(ref) {
+  return relationTargetPattern(ref.targetType).test(ref.target);
+}
+function invalidRelationCandidates(text, targetType, validCodes) {
+  const valid = new Set(validCodes);
+  const candidates = text.split(/[\s,，、;；()[\]（）]+/).map((token) => token.trim().replace(/^["'`]+|["'`.:：]+$/g, "")).filter(Boolean);
+  const pattern = relationTargetPattern(targetType);
+  return [...new Set(candidates.filter((candidate) => looksLikeRelationId(candidate, targetType) && !valid.has(candidate) && !pattern.test(candidate)))];
+}
+function looksLikeRelationId(candidate, targetType) {
+  if (targetType === "feature") {
+    return /^[A-Z][A-Z0-9-]*$/.test(candidate) && (/\d/.test(candidate) || candidate.includes("-")) && !/^AC\d+$/.test(candidate);
+  }
+  if (targetType === "scenario") {
+    return /^S[-A-Z0-9]+[a-z]?$/.test(candidate);
+  }
+  if (targetType === "decision") {
+    return /^D[-A-Z0-9]+$/.test(candidate);
+  }
+  if (targetType === "entity") {
+    return /^E[-0-9]+$/.test(candidate);
+  }
+  return false;
+}
+function relationTargetPattern(targetType) {
+  const patterns = {
+    decision: /^D-[A-Z]+-\d+$/,
+    entity: /^E-\d{3,}$/,
+    feature: /^(?!AC\d+$)[A-Z]{1,4}\d+$/,
+    scenario: /^S-\d+[a-z]?$/
+  };
+  return patterns[targetType] ?? /^.+$/;
 }
 function findDependsOnCycles(graph) {
   const adjacency = /* @__PURE__ */ new Map();
@@ -3960,11 +4841,11 @@ function validateE2eRegistry(graph) {
 }
 async function validateExecutableTraceability(root) {
   const issues = [];
-  const e2eDir = join4(root, "artifacts", "tests", "e2e");
+  const e2eDir = join5(root, "artifacts", "tests", "e2e");
   const specPatterns = ["heimdall/**/*.spec.ts", "heimdall/**/*.e2e.spec.ts"];
   let e2eFiles;
   try {
-    e2eFiles = (await readdir(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join4(e2eDir, name));
+    e2eFiles = (await readdir(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join5(e2eDir, name));
   } catch {
     return [];
   }
@@ -3973,11 +4854,11 @@ async function validateExecutableTraceability(root) {
   const tcKeyToFields = /* @__PURE__ */ new Map();
   const mdBatches = /* @__PURE__ */ new Set();
   for (const filePath of e2eFiles) {
-    const raw = await readFile3(filePath, "utf-8");
+    const raw = await readFile2(filePath, "utf-8");
     const relPath = relative2(root, filePath).split("\\").join("/");
     const parsed = matter(raw);
     const data = parsed.data;
-    const batch = String(data.test_batch ?? basename(filePath, extname(filePath))).trim();
+    const batch = String(data.test_batch ?? basename2(filePath, extname(filePath))).trim();
     const lines = raw.split(/\r?\n/);
     const tcStarts = [];
     lines.forEach((line, index) => {
@@ -4015,10 +4896,10 @@ async function validateExecutableTraceability(root) {
   const tcAnnotationRegex = /\/\/!?\s*@tc\s+(\S+?)\s+\[(\w+)\]/;
   const tcAnnotationNoLevelRegex = /\/\/!?\s*@tc\s+(\S+)/;
   for (const specFile of specFiles) {
-    const fullSpecPath = join4(root, specFile);
+    const fullSpecPath = join5(root, specFile);
     let content;
     try {
-      content = await readFile3(fullSpecPath, "utf-8");
+      content = await readFile2(fullSpecPath, "utf-8");
     } catch {
       continue;
     }
@@ -4086,7 +4967,7 @@ async function validateExecutableTraceability(root) {
       if (entry.testId) {
         let content;
         try {
-          content = await readFile3(join4(root, normalizedRefFile), "utf-8");
+          content = await readFile2(join5(root, normalizedRefFile), "utf-8");
         } catch {
           continue;
         }
@@ -4299,10 +5180,10 @@ async function validatePartialRustEvidence(tcFields, tcKey, root) {
   }
   for (const ref of rustRefs) {
     const normalizedPath = ref.file.startsWith("heimdall/") ? ref.file : `heimdall/${ref.file}`;
-    const fullPath = join4(root, normalizedPath);
+    const fullPath = join5(root, normalizedPath);
     let content;
     try {
-      content = await readFile3(fullPath, "utf-8");
+      content = await readFile2(fullPath, "utf-8");
     } catch {
       return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
     }
@@ -4371,9 +5252,9 @@ function escapeRegExp(value) {
 }
 async function hasMarkdownTc(tcKey, e2eDir) {
   const [batch, tcId] = tcKey.split(":");
-  const filePath = join4(e2eDir, `${batch}.md`);
+  const filePath = join5(e2eDir, `${batch}.md`);
   try {
-    const raw = await readFile3(filePath, "utf-8");
+    const raw = await readFile2(filePath, "utf-8");
     const tcRegex = new RegExp(`^#{2,3}\\s+${escapeRegExp(tcId)}\\s*[:\uFF1A]?`, "m");
     return tcRegex.test(raw);
   } catch {
@@ -4399,7 +5280,7 @@ async function walk(root, current = root) {
     if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git" || entry.name === ".artifact-graph") {
       continue;
     }
-    const fullPath = join4(current, entry.name);
+    const fullPath = join5(current, entry.name);
     if (entry.isDirectory()) {
       files.push(...await walk(root, fullPath));
     } else {
@@ -4414,14 +5295,21 @@ function matchesPattern(file, pattern) {
   }
   return globToRegExp(pattern).test(file);
 }
-function extractCodes(text, type) {
-  const patterns = {
+function extractCodes(text, type, schema) {
+  const corePatterns = {
     decision: /\bD-[A-Z]+-\d+\b/g,
     entity: /\bE-\d{3,}\b/g,
     feature: /\b(?!AC\d+\b)[A-Z]{1,4}\d+\b/g,
     scenario: /\bS-\d+[a-z]?\b/g
   };
-  return [...text.matchAll(patterns[type] ?? /$a/g)].map((match) => match[0]);
+  if (schema) {
+    const defaultPattern = DEFAULT_SCHEMA.idPatterns[type];
+    const schemaOverride = schema.idPatterns[type];
+    if (schemaOverride && schemaOverride !== defaultPattern) {
+      return [...text.matchAll(new RegExp(schemaOverride, "g"))].map((match) => match[0]);
+    }
+  }
+  return [...text.matchAll(corePatterns[type] ?? /$a/g)].map((match) => match[0]);
 }
 function extractE2eTcFields(block) {
   const fields = {};
@@ -4611,7 +5499,7 @@ function normalizeDesignCode(value) {
   if (!raw) {
     return "";
   }
-  return basename(raw, extname(raw));
+  return basename2(raw, extname(raw));
 }
 function toUid(type, code) {
   return `${type}:${code}`;
@@ -4730,8 +5618,24 @@ var TIER_ORDER = ["baseline", "target", "direct", "matrix", "transitive"];
 function resolveArtifactContext(graph, opts) {
   const mode = opts.mode ?? "full";
   const maxPerCategory = opts.maxPerCategory ?? 20;
-  const targetCount = [opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).length;
-  if (targetCount > 1) {
+  const legacyCount = [opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).length;
+  if (opts.target && legacyCount > 0) {
+    return {
+      schemaVersion: "1.0",
+      target: { type: "", id: "", uid: "" },
+      context: {},
+      missing: ["\u4E92\u65A5\uFF1Atarget \u4E0E --feature/--scenario/--decision/--design/--e2e-test \u4E0D\u80FD\u540C\u65F6\u4F7F\u7528"],
+      missingDetails: [{
+        ref: [opts.target.type + ":" + opts.target.id, opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).join(", "),
+        from: "cli-options",
+        kind: "multiple-targets",
+        message: "\u4E92\u65A5\uFF1Atarget \u4E0E --feature/--scenario/--decision/--design/--e2e-test \u4E0D\u80FD\u540C\u65F6\u4F7F\u7528",
+        suggestedAction: "\u53EA\u6307\u5B9A\u4E00\u79CD target \u5F62\u5F0F"
+      }],
+      omitted: []
+    };
+  }
+  if (legacyCount > 1) {
     return {
       schemaVersion: "1.0",
       target: { type: "", id: "", uid: "" },
@@ -4749,7 +5653,10 @@ function resolveArtifactContext(graph, opts) {
   }
   let targetType;
   let targetId;
-  if (opts.feature) {
+  if (opts.target) {
+    targetType = opts.target.type;
+    targetId = opts.target.id;
+  } else if (opts.feature) {
     targetType = "feature";
     targetId = opts.feature;
   } else if (opts.scenario) {
@@ -5037,8 +5944,8 @@ function formatContextMarkdown(manifest) {
 }
 
 // src/packet-prompt-audit.ts
-import { mkdir as mkdir5, writeFile as writeFile5 } from "fs/promises";
-import { join as join5 } from "path";
+import { mkdir as mkdir5, writeFile as writeFile4 } from "fs/promises";
+import { join as join6 } from "path";
 function promptFilename(target) {
   return `prompt-${target.type}-${target.id}.md`;
 }
@@ -5052,11 +5959,7 @@ async function auditSinglePromptTarget(target, graph, options) {
   };
   try {
     const manifest = resolveArtifactContext(graph, {
-      feature: target.type === "feature" ? target.id : void 0,
-      scenario: target.type === "scenario" ? target.id : void 0,
-      decision: target.type === "decision" ? target.id : void 0,
-      design: target.type === "design" ? target.id : void 0,
-      e2e_test: target.type === "e2e_test" ? target.id : void 0,
+      target: { type: target.type, id: target.id },
       mode: "implementation"
     });
     if (manifest.missing.length > 0) {
@@ -5092,8 +5995,8 @@ async function auditSinglePromptTarget(target, graph, options) {
     }
     if (options.outDir) {
       const filename = promptFilename(target);
-      const outPath = join5(options.outDir, filename);
-      await writeFile5(outPath, prompt, "utf-8");
+      const outPath = join6(options.outDir, filename);
+      await writeFile4(outPath, prompt, "utf-8");
       entry.outputPath = outPath;
     }
   } catch (error) {
@@ -5198,10 +6101,10 @@ async function auditPromptBatch(root, targets, options, graph) {
   };
   if (options.outDir) {
     await mkdir5(options.outDir, { recursive: true });
-    const jsonPath = join5(options.outDir, "prompt-audit-summary.json");
-    await writeFile5(jsonPath, JSON.stringify(summary, null, 2) + "\n", "utf-8");
-    const mdPath = join5(options.outDir, "prompt-audit-summary.md");
-    await writeFile5(mdPath, renderPromptAuditSummaryMarkdown(summary), "utf-8");
+    const jsonPath = join6(options.outDir, "prompt-audit-summary.json");
+    await writeFile4(jsonPath, JSON.stringify(summary, null, 2) + "\n", "utf-8");
+    const mdPath = join6(options.outDir, "prompt-audit-summary.md");
+    await writeFile4(mdPath, renderPromptAuditSummaryMarkdown(summary), "utf-8");
   }
   return summary;
 }
@@ -5234,7 +6137,7 @@ async function runCli(argv, io = {}) {
     switch (parsed.command) {
       case "init": {
         await initConfig(root);
-        out(`Created ${join6(root, "artifact-graph.config.yaml")}
+        out(`Created ${join7(root, "artifact-graph.config.yaml")}
 `);
         return 0;
       }
@@ -5246,9 +6149,13 @@ async function runCli(argv, io = {}) {
         return 0;
       }
       case "validate": {
+        const includes = new Set(
+          typeof parsed.flags.include === "string" ? parsed.flags.include.split(",") : []
+        );
         const config = await loadConfig(root);
         const graph = await scanArtifacts(root, config);
         const issues = validateGraph(graph, config);
+        issues.push(...await validateScenarioPrdLinkIndex(root, graph));
         issues.push(...await validateExecutableTraceability(root));
         if (parsed.flags.format === "json") {
           out(`${JSON.stringify(issues, null, 2)}
@@ -5300,22 +6207,20 @@ async function runCli(argv, io = {}) {
         return 0;
       }
       case "context": {
-        const contextTargets = [
-          typeof parsed.flags.feature === "string" ? "feature" : null,
-          typeof parsed.flags.scenario === "string" ? "scenario" : null,
-          typeof parsed.flags.decision === "string" ? "decision" : null,
-          typeof parsed.flags.design === "string" ? "design" : null,
-          typeof parsed.flags["e2e-test"] === "string" ? "e2e_test" : null
-        ].filter(Boolean);
-        if (contextTargets.length !== 1) {
-          err("Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n");
+        const config = await loadConfig(root);
+        let resolvedTarget;
+        try {
+          resolvedTarget = resolveCliTarget(parsed.flags, config);
+        } catch (e) {
+          err(`${e.message}
+`);
+          err("Usage: artifact-graph context (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json]\n");
           return 1;
         }
         const contextMode = typeof parsed.flags.mode === "string" ? parsed.flags.mode : "implementation";
         if (contextMode !== "implementation" && contextMode !== "full") {
           err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full
 `);
-          err("Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n");
           return 1;
         }
         const maxPerCategory = typeof parsed.flags["max-per-category"] === "string" ? Number(parsed.flags["max-per-category"]) : void 0;
@@ -5325,17 +6230,12 @@ async function runCli(argv, io = {}) {
           if (!Number.isFinite(num) || num < 1 || !Number.isInteger(num)) {
             err(`Invalid --max-per-category: "${raw}". Must be a positive integer
 `);
-            err("Usage: artifact-graph context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]\n");
             return 1;
           }
         }
         const graph = await scanArtifacts(root);
         const manifest = resolveArtifactContext(graph, {
-          feature: typeof parsed.flags.feature === "string" ? parsed.flags.feature : void 0,
-          scenario: typeof parsed.flags.scenario === "string" ? parsed.flags.scenario : void 0,
-          decision: typeof parsed.flags.decision === "string" ? parsed.flags.decision : void 0,
-          design: typeof parsed.flags.design === "string" ? parsed.flags.design : void 0,
-          e2e_test: typeof parsed.flags["e2e-test"] === "string" ? parsed.flags["e2e-test"] : void 0,
+          target: resolvedTarget,
           mode: contextMode,
           maxPerCategory
         });
@@ -5348,22 +6248,20 @@ async function runCli(argv, io = {}) {
         return manifest.missing.length > 0 ? 1 : 0;
       }
       case "packet": {
-        const packetTargets = [
-          typeof parsed.flags.feature === "string" ? "feature" : null,
-          typeof parsed.flags.scenario === "string" ? "scenario" : null,
-          typeof parsed.flags.decision === "string" ? "decision" : null,
-          typeof parsed.flags.design === "string" ? "design" : null,
-          typeof parsed.flags["e2e-test"] === "string" ? "e2e_test" : null
-        ].filter(Boolean);
-        if (packetTargets.length !== 1) {
-          err("Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n");
+        const config = await loadConfig(root);
+        let resolvedTarget;
+        try {
+          resolvedTarget = resolveCliTarget(parsed.flags, config);
+        } catch (e) {
+          err(`${e.message}
+`);
+          err("Usage: artifact-graph packet (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]\n");
           return 1;
         }
         const packetMode = typeof parsed.flags.mode === "string" ? parsed.flags.mode : "implementation";
         if (packetMode !== "implementation" && packetMode !== "full") {
           err(`Invalid --mode: "${parsed.flags.mode}". Allowed values: implementation, full
 `);
-          err("Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n");
           return 1;
         }
         const packetMaxPerCategory = typeof parsed.flags["max-per-category"] === "string" ? Number(parsed.flags["max-per-category"]) : void 0;
@@ -5373,17 +6271,12 @@ async function runCli(argv, io = {}) {
           if (!Number.isFinite(num2) || num2 < 1 || !Number.isInteger(num2)) {
             err(`Invalid --max-per-category: "${raw2}". Must be a positive integer
 `);
-            err("Usage: artifact-graph packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>]\n");
             return 1;
           }
         }
         const graph = await scanArtifacts(root);
         const manifest = resolveArtifactContext(graph, {
-          feature: typeof parsed.flags.feature === "string" ? parsed.flags.feature : void 0,
-          scenario: typeof parsed.flags.scenario === "string" ? parsed.flags.scenario : void 0,
-          decision: typeof parsed.flags.decision === "string" ? parsed.flags.decision : void 0,
-          design: typeof parsed.flags.design === "string" ? parsed.flags.design : void 0,
-          e2e_test: typeof parsed.flags["e2e-test"] === "string" ? parsed.flags["e2e-test"] : void 0,
+          target: resolvedTarget,
           mode: packetMode,
           maxPerCategory: packetMaxPerCategory
         });
@@ -5396,7 +6289,7 @@ async function runCli(argv, io = {}) {
           err("\nFix the traceability gaps above before generating an implementation packet.\n");
           if (typeof parsed.flags.out === "string") {
             const errorReport = JSON.stringify({ error: "missing", missing: manifest.missing }, null, 2);
-            await writeFile6(parsed.flags.out, errorReport + "\n");
+            await writeFile5(parsed.flags.out, errorReport + "\n");
           }
           return 1;
         }
@@ -5406,7 +6299,7 @@ async function runCli(argv, io = {}) {
         });
         const skipValidate = parsed.flags["no-validate"] === true;
         if (!skipValidate) {
-          const vResult = validatePacket(packet);
+          const vResult = validatePacket(packet, config);
           if (vResult.issues.length > 0) {
             for (const issue2 of vResult.issues) {
               err(`[${issue2.severity.toUpperCase()}] ${issue2.code}: ${issue2.message}
@@ -5430,7 +6323,7 @@ async function runCli(argv, io = {}) {
           return 1;
         }
         if (typeof parsed.flags.out === "string") {
-          await writeFile6(parsed.flags.out, output);
+          await writeFile5(parsed.flags.out, output);
           out(`Packet written to ${parsed.flags.out}
 `);
         } else {
@@ -5446,19 +6339,13 @@ async function runCli(argv, io = {}) {
           return 1;
         }
         const packetJsonPath = typeof parsed.flags.packet === "string" ? parsed.flags.packet : void 0;
-        const promptTargets = [
-          typeof parsed.flags.feature === "string" ? "feature" : null,
-          typeof parsed.flags.scenario === "string" ? "scenario" : null,
-          typeof parsed.flags.decision === "string" ? "decision" : null,
-          typeof parsed.flags.design === "string" ? "design" : null,
-          typeof parsed.flags["e2e-test"] === "string" ? "e2e_test" : null
-        ].filter(Boolean);
-        if (packetJsonPath && promptTargets.length > 0) {
-          err("\u9519\u8BEF\uFF1A--packet \u4E0E --feature/--scenario/--decision/--design/--e2e-test \u4E92\u65A5\uFF0C\u53EA\u80FD\u6307\u5B9A\u4E00\u79CD\u8F93\u5165\u65B9\u5F0F\n");
+        const hasAnyTarget = typeof parsed.flags.target === "string" || typeof parsed.flags.feature === "string" || typeof parsed.flags.scenario === "string" || typeof parsed.flags.decision === "string" || typeof parsed.flags.design === "string" || typeof parsed.flags["e2e-test"] === "string";
+        if (packetJsonPath && hasAnyTarget) {
+          err("\u9519\u8BEF\uFF1A--packet \u4E0E --target/--feature/--scenario/--decision/--design/--e2e-test \u4E92\u65A5\uFF0C\u53EA\u80FD\u6307\u5B9A\u4E00\u79CD\u8F93\u5165\u65B9\u5F0F\n");
           return 1;
         }
-        if (!packetJsonPath && promptTargets.length !== 1) {
-          err("Usage: artifact-graph packet-prompt (--feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]\n");
+        if (!packetJsonPath && !hasAnyTarget) {
+          err("Usage: artifact-graph packet-prompt (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]\n");
           return 1;
         }
         const maxChars = typeof parsed.flags["max-chars"] === "string" ? Number(parsed.flags["max-chars"]) : DEFAULT_MAX_CHARS;
@@ -5475,7 +6362,7 @@ async function runCli(argv, io = {}) {
         if (packetJsonPath) {
           let rawJson;
           try {
-            rawJson = await readFile4(packetJsonPath, "utf-8");
+            rawJson = await readFile3(packetJsonPath, "utf-8");
           } catch (readErr) {
             err(`\u9519\u8BEF\uFF1A\u65E0\u6CD5\u8BFB\u53D6 packet \u6587\u4EF6: "${packetJsonPath}" \u2014 ${readErr.message}
 `);
@@ -5508,13 +6395,18 @@ async function runCli(argv, io = {}) {
           }
           promptPacket = parsedPacket;
         } else {
+          const config = await loadConfig(root);
+          let resolvedTarget;
+          try {
+            resolvedTarget = resolveCliTarget(parsed.flags, config);
+          } catch (e) {
+            err(`${e.message}
+`);
+            return 1;
+          }
           const graph = await scanArtifacts(root);
           const promptManifest = resolveArtifactContext(graph, {
-            feature: typeof parsed.flags.feature === "string" ? parsed.flags.feature : void 0,
-            scenario: typeof parsed.flags.scenario === "string" ? parsed.flags.scenario : void 0,
-            decision: typeof parsed.flags.decision === "string" ? parsed.flags.decision : void 0,
-            design: typeof parsed.flags.design === "string" ? parsed.flags.design : void 0,
-            e2e_test: typeof parsed.flags["e2e-test"] === "string" ? parsed.flags["e2e-test"] : void 0,
+            target: resolvedTarget,
             mode: "implementation"
           });
           if (promptManifest.missing.length > 0) {
@@ -5558,7 +6450,7 @@ async function runCli(argv, io = {}) {
 `);
         }
         if (typeof parsed.flags.out === "string") {
-          await writeFile6(parsed.flags.out, prompt);
+          await writeFile5(parsed.flags.out, prompt);
           out(`Prompt written to ${parsed.flags.out}
 `);
         } else {
@@ -5586,6 +6478,8 @@ async function runCli(argv, io = {}) {
         let sampleTargets;
         if (sampleTargetsRaw) {
           sampleTargets = sampleTargetsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+          const auditConfig = await loadConfig(root);
+          const validTargetTypes = getTargetArtifactTypes(auditConfig);
           for (const st of sampleTargets) {
             const colonIdx = st.indexOf(":");
             if (colonIdx < 0) {
@@ -5594,8 +6488,8 @@ async function runCli(argv, io = {}) {
               return 1;
             }
             const stType = st.slice(0, colonIdx).trim();
-            if (!["feature", "scenario", "decision", "design", "e2e_test"].includes(stType)) {
-              err(`Invalid --sample-targets entry: "${st}". Type must be feature, scenario, decision, design, or e2e_test
+            if (!validTargetTypes.includes(stType)) {
+              err(`Invalid --sample-targets entry: "${st}". Type must be one of: ${validTargetTypes.join(", ")}
 `);
               return 1;
             }
@@ -5665,8 +6559,9 @@ async function runCli(argv, io = {}) {
             summaryDetail
           });
         } else {
-          const targetsContent = await readFile4(targetsFile, "utf-8");
-          const parseResult = parseTargetsFile(targetsContent);
+          const targetsContent = await readFile3(targetsFile, "utf-8");
+          const auditConfig2 = await loadConfig(root);
+          const parseResult = parseTargetsFile(targetsContent, auditConfig2);
           if (parseResult.errors.length > 0) {
             for (const e of parseResult.errors) {
               err(`Parse error (line ${e.line}): ${e.message} \u2014 ${e.raw}
@@ -5688,7 +6583,8 @@ async function runCli(argv, io = {}) {
             sourceTargetsPath: targetsFile,
             summaryOnly,
             sampleTargets,
-            summaryDetail
+            summaryDetail,
+            schema: auditConfig2
           });
         }
         if (parsed.flags.format === "json") {
@@ -5785,7 +6681,7 @@ async function runCli(argv, io = {}) {
         } else {
           let ppaTargetsContent;
           try {
-            ppaTargetsContent = await readFile4(ppaTargetsFile, "utf-8");
+            ppaTargetsContent = await readFile3(ppaTargetsFile, "utf-8");
           } catch (readErr) {
             err(`\u9519\u8BEF\uFF1A\u65E0\u6CD5\u8BFB\u53D6 targets \u6587\u4EF6: "${ppaTargetsFile}" \u2014 ${readErr.message}
 `);
@@ -5796,7 +6692,8 @@ async function runCli(argv, io = {}) {
 `);
             return 1;
           }
-          const ppaParseResult = parseTargetsFile(ppaTargetsContent);
+          const ppaConfig = await loadConfig(root);
+          const ppaParseResult = parseTargetsFile(ppaTargetsContent, ppaConfig);
           if (ppaParseResult.errors.length > 0) {
             for (const e of ppaParseResult.errors) {
               err(`Parse error (line ${e.line}): ${e.message} \u2014 ${e.raw}
@@ -5862,7 +6759,7 @@ async function runCli(argv, io = {}) {
         const output = `${JSON.stringify(index, null, 2)}
 `;
         if (typeof parsed.flags.out === "string") {
-          await writeFile6(parsed.flags.out, output);
+          await writeFile5(parsed.flags.out, output);
           out(`Version index written to ${parsed.flags.out}
 `);
         } else {
@@ -6016,20 +6913,24 @@ async function runCli(argv, io = {}) {
           return 1;
         }
         const hookFlag = typeof parsed.flags.hook === "string" ? parsed.flags.hook : "all";
-        const hooks = hookFlag === "all" ? ["pre-commit", "pre-push"] : [hookFlag];
-        for (const hookName of hooks) {
-          if (hookName !== "pre-commit" && hookName !== "pre-push") {
-            err(`Unsupported hook: ${hookName}
+        if (hookFlag !== "all" && hookFlag !== "pre-commit" && hookFlag !== "pre-push") {
+          err(`Unsupported hook: ${hookFlag}
 `);
-            return 1;
-          }
+          return 1;
+        }
+        const hooks = hookFlag === "all" ? ["pre-commit", "pre-push"] : [hookFlag];
+        const prepared = [];
+        for (const hookName of hooks) {
           const templatePath = fileURLToPath(new URL(`../templates/git-hooks/${hookName}.sh`, import.meta.url));
-          const block = await readFile4(templatePath, "utf-8");
-          const result = await installManagedHookBlock({
-            hookPath: join6(root, `.git/hooks/${hookName}`),
+          const block = await readFile3(templatePath, "utf-8");
+          prepared.push(await prepareManagedHookBlock({
+            hookPath: await resolveGitHookPath(root, hookName),
             block,
             uninstall: parsed.flags.uninstall === true
-          });
+          }));
+        }
+        const results = await applyPreparedManagedHookBlocks(prepared);
+        for (const result of results) {
           out(`${result.action}: ${result.hookPath}
 `);
         }
@@ -6073,7 +6974,7 @@ function isGraphRelevantPath(path) {
   return path === "artifact-graph.config.yaml" || path === VERSION_LOCK_PATH || path.startsWith("artifacts/") || /\.(md|mdx|json|ya?ml|ts|tsx|js|jsx|mts|cts|rs|py|go)$/.test(path);
 }
 async function initConfig(root) {
-  const configPath = join6(root, "artifact-graph.config.yaml");
+  const configPath = join7(root, "artifact-graph.config.yaml");
   try {
     await access2(configPath);
     throw new Error(`Config already exists: ${configPath}`);
@@ -6082,7 +6983,7 @@ async function initConfig(root) {
       throw error;
     }
   }
-  await writeFile6(configPath, yaml2.dump(DEFAULT_SCHEMA, { lineWidth: 120 }));
+  await writeFile5(configPath, yaml2.dump(DEFAULT_SCHEMA, { lineWidth: 120 }));
 }
 function parseArgs(argv) {
   const [command, ...rest] = argv;
@@ -6111,13 +7012,13 @@ function helpText() {
 Commands:
   init
   scan
-  validate [--format json] [--warning-only]
+  validate [--format json] [--warning-only] [--include scenario-prd-links]
   query --from <code> [--format json]
-  context --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json]
-  packet --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]
-  packet-prompt (--feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]
+  context (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json]
+  packet (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]
+  packet-prompt (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id> | --packet <path>) [--max-chars <n>] [--format markdown] [--out <path>]
   packet-audit (--targets-file <path> | --discover) [--out-dir <path>] [--limit <n>] [--format json|markdown] [--mode full|implementation] [--max-per-category <n>] [--summary-only] [--sample-targets <type:id,...>] [--summary-detail full|compact]
-  packet-prompt-audit --targets-file <path> [--out-dir <path>] [--format json|markdown] [--max-chars <n>]
+  packet-prompt-audit (--targets-file <path> | --discover) [--out-dir <path>] [--format json|markdown] [--max-chars <n>] [--limit <n>] [--summary-only] [--summary-detail full|compact]
   version-index [--format json] [--out <path>]
   version-lock audit [--format json|markdown] [--warning-only] [--strict-missing-lock] [--lock-path <path>]
   version-lock update --target <type:id> --source <path> [--verified-by <path,path>] [--lock-path <path>]

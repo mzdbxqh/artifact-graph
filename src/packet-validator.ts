@@ -3,6 +3,9 @@
  *
  * Schema validation for implementation packets.
  * Validates both structured JSON packets and rendered Markdown packets.
+ *
+ * v1.12: accepts optional schema to derive valid target types dynamically.
+ * Without schema, falls back to the static VALID_PACKET_TARGET_TYPES list.
  */
 import type { ImplementationPacket } from './packet-assembler.js';
 import { BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT } from './packet-constants.js';
@@ -10,12 +13,34 @@ import { BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT } from './packet-const
 /** Minimum required validation commands */
 const MIN_VALIDATION_COMMANDS = 4;
 
-/** Valid target types for packets */
+/** Valid target types for packets (legacy static fallback) */
 export const VALID_PACKET_TARGET_TYPES = ['feature', 'scenario', 'decision', 'design', 'e2e_test'] as const;
 export type PacketTargetType = typeof VALID_PACKET_TARGET_TYPES[number];
 
 export function isPacketTargetType(type: string): type is PacketTargetType {
   return (VALID_PACKET_TARGET_TYPES as readonly string[]).includes(type);
+}
+
+/**
+ * Check whether a type is a valid packet target, optionally using a loaded schema.
+ * When a schema is provided, uses dynamic target-capable types.
+ * Without schema, uses the static VALID_PACKET_TARGET_TYPES.
+ */
+type PacketTargetSchema = {
+  types: Record<string, { target?: boolean; role?: string }>;
+  idPatterns?: Record<string, string>;
+};
+
+export function isPacketTargetTypeDynamic(type: string, schema?: PacketTargetSchema): boolean {
+  if (schema) {
+    const definition = schema.types[type];
+    if (!definition) return false;
+    if (definition.target === true) return true;
+    // Match getArtifactTypeMetadata: legacy types are implicitly target-capable
+    // only while their configured role remains the canonical type name.
+    return isPacketTargetType(type) && definition.role === type;
+  }
+  return isPacketTargetType(type);
 }
 
 const VALID_TARGET_TYPES = [...VALID_PACKET_TARGET_TYPES];
@@ -48,7 +73,10 @@ export interface PacketValidationResult {
  * - PKT-006: validationCommands must have at least 4 entries
  * - PKT-007: missing.length > 0 is a warning
  */
-export function validatePacket(packet: ImplementationPacket): PacketValidationResult {
+export function validatePacket(
+  packet: ImplementationPacket,
+  schema?: PacketTargetSchema,
+): PacketValidationResult {
   const issues: PacketValidationIssue[] = [];
 
   // PKT-001: schemaVersion
@@ -61,12 +89,15 @@ export function validatePacket(packet: ImplementationPacket): PacketValidationRe
     });
   }
 
-  // PKT-002: target.type
-  if (!isPacketTargetType(packet.target.type)) {
+  // PKT-002: target.type — validate shape only; allowability determined by loaded schema
+  if (!isPacketTargetTypeDynamic(packet.target.type, schema)) {
+    const validTypes = schema
+      ? Object.keys(schema.types).filter((t) => isPacketTargetTypeDynamic(t, schema))
+      : VALID_TARGET_TYPES;
     issues.push({
       severity: 'error',
       code: 'PKT-002',
-      message: `target.type must be one of [${VALID_TARGET_TYPES.join(', ')}], got "${packet.target.type}"`,
+      message: `target.type must be one of [${validTypes.join(', ')}], got "${packet.target.type}"`,
       path: 'target.type',
     });
   }

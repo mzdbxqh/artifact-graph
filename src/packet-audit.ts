@@ -6,6 +6,7 @@
  */
 import type {
   ArtifactGraph,
+  ArtifactSchema,
   ContextManifest,
   ContextMode,
   MissingDetail,
@@ -13,6 +14,7 @@ import type {
 import {
   assemblePacket,
   discoverTargets,
+  getTargetArtifactTypes,
   loadConfig,
   renderPacketMarkdown,
   resolveArtifactContext,
@@ -91,6 +93,8 @@ interface AuditOptions {
   sampleTargets?: string[];
   /** Detail level: 'full' includes all targets, 'compact' omits passed targets */
   summaryDetail?: 'full' | 'compact';
+  /** Artifact schema for dynamic target type validation in validatePacket */
+  schema?: ArtifactSchema;
 }
 
 // ── Parse targets file ──
@@ -113,8 +117,16 @@ const VALID_TYPES_LABEL = VALID_PACKET_TARGET_TYPES.join(', ');
  * Parse a targets file where each line is `type:id`.
  * Blank lines and lines starting with `#` are skipped.
  * Returns structured result with valid targets and parse errors.
+ *
+ * When a schema is provided, target types are validated against the schema's
+ * target-capable types (dynamic). Without a schema, falls back to the static
+ * VALID_PACKET_TARGET_TYPES list for backward compatibility.
  */
-export function parseTargetsFile(content: string): ParseResult {
+export function parseTargetsFile(content: string, schema?: ArtifactSchema): ParseResult {
+  const validTypes = schema
+    ? new Set(getTargetArtifactTypes(schema))
+    : VALID_TYPES;
+  const validTypesLabel = [...validTypes].join(', ');
   const targets: TargetRef[] = [];
   const errors: ParseError[] = [];
   const lines = content.split('\n');
@@ -128,15 +140,15 @@ export function parseTargetsFile(content: string): ParseResult {
     }
     const type = line.slice(0, colonIdx).trim();
     const id = line.slice(colonIdx + 1).trim();
-    if (!VALID_TYPES.has(type)) {
-      errors.push({ line: i + 1, raw: lines[i], message: `非法类型 "${type}"，允许值: ${VALID_TYPES_LABEL}` });
+    if (!validTypes.has(type)) {
+      errors.push({ line: i + 1, raw: lines[i], message: `非法类型 "${type}"，允许值: ${validTypesLabel}` });
       continue;
     }
     if (!id) {
       errors.push({ line: i + 1, raw: lines[i], message: `ID 为空，期望格式 "type:id"` });
       continue;
     }
-    targets.push({ type: type as TargetRef['type'], id });
+    targets.push({ type, id });
   }
   return { targets, errors };
 }
@@ -161,18 +173,8 @@ async function auditSingleTarget(
   };
 
   try {
-    const contextOpts: Record<string, string | number | undefined> = {
-      [target.type]: target.id,
-    };
-    if (options.mode) contextOpts.mode = options.mode;
-    if (options.maxPerCategory !== undefined) contextOpts.maxPerCategory = options.maxPerCategory;
-
     const manifest: ContextManifest = resolveArtifactContext(graph, {
-      feature: target.type === 'feature' ? target.id : undefined,
-      scenario: target.type === 'scenario' ? target.id : undefined,
-      decision: target.type === 'decision' ? target.id : undefined,
-      design: target.type === 'design' ? target.id : undefined,
-      e2e_test: target.type === 'e2e_test' ? target.id : undefined,
+      target: { type: target.type, id: target.id },
       mode: options.mode,
       maxPerCategory: options.maxPerCategory,
     });
@@ -194,7 +196,7 @@ async function auditSingleTarget(
     entry.itemsCount = totalItems;
 
     // Validate assembled packet
-    const validationResult = validatePacket(packet);
+    const validationResult = validatePacket(packet, options.schema);
     if (validationResult.issues.length > 0) {
       entry.validationIssues = validationResult.issues;
     }
@@ -360,6 +362,8 @@ interface DiscoverAuditOptions {
   summaryOnly?: boolean;
   sampleTargets?: string[];
   summaryDetail?: 'full' | 'compact';
+  /** Artifact schema for dynamic target type validation */
+  schema?: ArtifactSchema;
 }
 
 /**
@@ -386,5 +390,6 @@ export async function discoverAndAuditPackets(
     summaryOnly: options.summaryOnly,
     sampleTargets: options.sampleTargets,
     summaryDetail: options.summaryDetail,
+    schema: config,
   }, graph);
 }

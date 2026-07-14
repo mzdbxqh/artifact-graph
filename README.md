@@ -14,7 +14,14 @@ agent claims implementation work is complete.
 pnpm add -D artifact-graph
 ```
 
-Node.js `>=22.0.0` is required.
+Or install from GitHub:
+
+```bash
+npm install github:mzdbxqh/artifact-graph
+```
+
+Node.js `>=22.0.0` is required. For pnpm 10+, see [INSTALL.md](INSTALL.md) for the native build
+allowlist setup.
 
 ## Quick Start
 

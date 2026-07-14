@@ -17,6 +17,7 @@ jobs:
         with:
           node-version: 22
       - run: pnpm install
-      - run: pnpm build
       - run: pnpm test:ci
       - run: pnpm typecheck
+      - run: pnpm build
+      - run: git diff --exit-code

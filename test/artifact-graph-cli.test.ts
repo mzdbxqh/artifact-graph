@@ -191,6 +191,33 @@ scenarios: [S-404]
     expect(warningOnly.stdout).toContain('DANGLING_REFERENCE');
   });
 
+  it('exposes scenario to PRD link validation through validate --include scenario-prd-links', async () => {
+    const root = await cliRepo('scenario-prd-include');
+    await write(
+      root,
+      'artifacts/scenarios/batch-1.md',
+      `## S-01: Import local skill
+
+**关联功能**: A1, A1
+`,
+    );
+    await write(
+      root,
+      'artifacts/prd/feature-index.md',
+      `| Feature | Title | Domain | Status | Scenarios |
+| --- | --- | --- | --- | --- |
+| [A1](features/A1-skill-import.md) | Skill import/register | A | done | 2 |
+`,
+    );
+
+    const validate = await capture(['validate', '--root', root, '--include', 'scenario-prd-links', '--warning-only', '--format', 'json'], root);
+    const issues = JSON.parse(validate.stdout) as Array<{ code: string; message: string }>;
+
+    expect(validate.code).toBe(0);
+    expect(issues).toContainEqual(expect.objectContaining({ code: 'DUPLICATE' }));
+    expect(issues).toContainEqual(expect.objectContaining({ code: 'INDEX_MISMATCH' }));
+  });
+
   it('includes executable traceability warnings in validate output', async () => {
     const root = await cliRepo('traceability');
     await write(
@@ -299,7 +326,7 @@ status: accepted
       type: 'decision',
       id: 'D-ARCH-01',
       uid: 'decision:D-ARCH-01',
-      title: 'D-ARCH-01',
+      title: 'Use TypeScript full stack',
       sourcePath: 'artifacts/decisions/D-ARCH-01.md',
     });
     expect(manifest.missing).toEqual([]);
@@ -563,6 +590,163 @@ status: accepted
     const result = await capture(['context', '--root', root, '--feature', 'A1', '--design', 'design-skill-import'], root);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('Usage');
+  });
+});
+
+describe('target-selector: parseTargetSelector', () => {
+  it('splits on first colon, preserving colons in ID', async () => {
+    const { parseTargetSelector } = await import('../src/target-selector.js');
+    expect(parseTargetSelector('e2e_test:batch:TC-001')).toEqual({
+      type: 'e2e_test',
+      id: 'batch:TC-001',
+    });
+  });
+
+  it('parses simple type:id', async () => {
+    const { parseTargetSelector } = await import('../src/target-selector.js');
+    expect(parseTargetSelector('feature:A1')).toEqual({
+      type: 'feature',
+      id: 'A1',
+    });
+  });
+
+  it('rejects missing colon', async () => {
+    const { parseTargetSelector } = await import('../src/target-selector.js');
+    expect(() => parseTargetSelector('featureA1')).toThrow('target must use <type>:<id>');
+  });
+
+  it('rejects empty type', async () => {
+    const { parseTargetSelector } = await import('../src/target-selector.js');
+    expect(() => parseTargetSelector(':A1')).toThrow('target must use <type>:<id>');
+  });
+
+  it('rejects empty id', async () => {
+    const { parseTargetSelector } = await import('../src/target-selector.js');
+    expect(() => parseTargetSelector('feature:')).toThrow('target must use <type>:<id>');
+  });
+});
+
+describe('--target CLI integration', () => {
+  // Helper to create a repo with custom target types
+  async function customTargetRepo(name: string): Promise<string> {
+    const root = join(tmpdir(), `artifact-graph-custom-target-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `types:
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: true
+    displayName: "API Contract"
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+---
+# A1: Skill import/register
+`);
+    await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+---
+# Order API
+`);
+    return root;
+  }
+
+  // Helper to create a repo with target:false type
+  async function noTargetRepo(name: string): Promise<string> {
+    const root = join(tmpdir(), `artifact-graph-no-target-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `types:
+  api_contract:
+    paths: ["artifacts/contracts/api/**/*.md"]
+    target: false
+    displayName: "API Contract"
+idPatterns:
+  api_contract: "^API-\\\\d+$"
+`);
+    await write(root, 'artifacts/contracts/api/API-001.md', `---
+id: API-001
+title: Order API
+status: active
+---
+# Order API
+`);
+    return root;
+  }
+
+  it('context --target api_contract:API-001 works for custom target type', async () => {
+    const root = await customTargetRepo('context-custom');
+    const result = await capture(['context', '--root', root, '--target', 'api_contract:API-001', '--format', 'json'], root);
+    expect(result.code).toBe(0);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.target.type).toBe('api_contract');
+    expect(manifest.target.id).toBe('API-001');
+  });
+
+  it('context --target with colon in ID (e2e_test:batch:TC-001)', async () => {
+    const root = await cliRepo('context-colon-id');
+    const result = await capture(['context', '--root', root, '--target', 'e2e_test:test-01:TC-001', '--format', 'json'], root);
+    expect(result.code).toBe(0);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.target.type).toBe('e2e_test');
+    expect(manifest.target.id).toBe('test-01:TC-001');
+  });
+
+  it('--target and --feature are mutually exclusive', async () => {
+    const root = await customTargetRepo('context-mutex');
+    const result = await capture(['context', '--root', root, '--target', 'api_contract:API-001', '--feature', 'A1'], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('互斥');
+  });
+
+  it('packet --target and --feature are mutually exclusive', async () => {
+    const root = await customTargetRepo('packet-mutex');
+    const result = await capture(['packet', '--root', root, '--target', 'api_contract:API-001', '--feature', 'A1'], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('互斥');
+  });
+
+  it('rejects --target with unregistered type', async () => {
+    const root = await customTargetRepo('context-unreg');
+    const result = await capture(['context', '--root', root, '--target', 'unknown_type:X-001'], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('不是合法的 target 类型');
+  });
+
+  it('rejects --target with target:false type', async () => {
+    const root = await noTargetRepo('context-no-target');
+    const result = await capture(['context', '--root', root, '--target', 'api_contract:API-001'], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('不是合法的 target 类型');
+  });
+
+  it('legacy --feature still works', async () => {
+    const root = await cliRepo('context-legacy');
+    const result = await capture(['context', '--root', root, '--feature', 'A1', '--format', 'json'], root);
+    expect(result.code).toBe(0);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.target.type).toBe('feature');
+    expect(manifest.target.id).toBe('A1');
+  });
+
+  it('packet --target works for custom target type', async () => {
+    const root = await customTargetRepo('packet-custom');
+    const result = await capture(['packet', '--root', root, '--target', 'api_contract:API-001', '--format', 'json'], root);
+    expect(result.code).toBe(0);
+    const packet = JSON.parse(result.stdout);
+    expect(packet.target.type).toBe('api_contract');
+    expect(packet.target.id).toBe('API-001');
+  });
+
+  it('no target flag gives error', async () => {
+    const root = await cliRepo('context-no-flag');
+    const result = await capture(['context', '--root', root], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('未指定 target');
   });
 });
 

@@ -107,11 +107,7 @@ async function auditSinglePromptTarget(
 
   try {
     const manifest: ContextManifest = resolveArtifactContext(graph, {
-      feature: target.type === 'feature' ? target.id : undefined,
-      scenario: target.type === 'scenario' ? target.id : undefined,
-      decision: target.type === 'decision' ? target.id : undefined,
-      design: target.type === 'design' ? target.id : undefined,
-      e2e_test: target.type === 'e2e_test' ? target.id : undefined,
+      target: { type: target.type, id: target.id },
       mode: 'implementation',
     });
 
