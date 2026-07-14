@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import yaml from 'js-yaml';
 import { realpathSync } from 'node:fs';
-import { access, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -66,6 +66,10 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const root = String(parsed.flags.root ?? cwd);
 
   try {
+    if (parsed.command === '--help' || parsed.command === '-h' || parsed.command === 'help') {
+      out(helpText());
+      return 0;
+    }
     switch (parsed.command) {
       case 'init': {
         await initConfig(root);
@@ -889,6 +893,7 @@ async function initConfig(root: string): Promise<void> {
       throw error;
     }
   }
+  await mkdir(root, { recursive: true });
   await writeFile(configPath, yaml.dump(DEFAULT_SCHEMA, { lineWidth: 120 }));
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "artifact-graph",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Git-native Markdown artifact graph scanner and validator",
   "license": "Apache-2.0",
   "type": "module",
@@ -36,7 +36,8 @@
   "scripts": {
     "build": "tsup src/index.ts --format esm,cjs --dts --splitting false && tsup src/cli.ts --format esm --dts --splitting false",
     "test": "vitest run --config vitest.config.ts",
-    "test:ci": "ARTIFACT_GRAPH_PUBLIC_REPO=1 vitest run --config vitest.config.ts",
+    "test:ci": "ARTIFACT_GRAPH_PUBLIC_REPO=1 vitest run --config vitest.config.ts && pnpm test:npm-consumer",
+    "test:npm-consumer": "node test/npm-bin-install.test.mjs",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "clean": "rm -rf dist coverage",

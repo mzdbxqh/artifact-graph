@@ -131,6 +131,27 @@ async function capture(argv: string[], cwd: string): Promise<{ code: number; std
 }
 
 describe('artifact-graph CLI', () => {
+  it.each([['--help'], ['-h'], ['help']])('explicit help %j returns exit 0 with usage', async (args) => {
+    const root = await cliRepo(`help-${args[0]}`);
+    const result = await capture([args], root);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain('artifact-graph <command>');
+    expect(result.stdout).toContain('version-lock');
+  });
+
+  it('no arguments returns non-zero and prints usage to stderr', async () => {
+    const root = await cliRepo('no-args');
+    const result = await capture([], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('artifact-graph <command>');
+  });
+
+  it('unknown command returns non-zero', async () => {
+    const root = await cliRepo('unknown');
+    const result = await capture(['bogus'], root);
+    expect(result.code).toBe(1);
+  });
+
   it('scans and validates a repository while writing generated caches', async () => {
     const root = await cliRepo('scan');
 

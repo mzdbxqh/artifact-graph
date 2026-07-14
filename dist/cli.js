@@ -3,7 +3,7 @@
 // src/cli.ts
 import yaml2 from "js-yaml";
 import { realpathSync } from "fs";
-import { access as access2, readFile as readFile3, writeFile as writeFile5 } from "fs/promises";
+import { access as access2, mkdir as mkdir6, readFile as readFile3, writeFile as writeFile5 } from "fs/promises";
 import { join as join7 } from "path";
 import { fileURLToPath } from "url";
 
@@ -6134,6 +6134,10 @@ async function runCli(argv, io = {}) {
   const err = io.stderr ?? ((chunk) => process.stderr.write(chunk));
   const root = String(parsed.flags.root ?? cwd);
   try {
+    if (parsed.command === "--help" || parsed.command === "-h" || parsed.command === "help") {
+      out(helpText());
+      return 0;
+    }
     switch (parsed.command) {
       case "init": {
         await initConfig(root);
@@ -6983,6 +6987,7 @@ async function initConfig(root) {
       throw error;
     }
   }
+  await mkdir6(root, { recursive: true });
   await writeFile5(configPath, yaml2.dump(DEFAULT_SCHEMA, { lineWidth: 120 }));
 }
 function parseArgs(argv) {

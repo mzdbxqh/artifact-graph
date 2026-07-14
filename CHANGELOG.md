@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.3.1
+
+### Fixed
+
+- **CLI help contract**: `artifact-graph --help`、`-h` 和 `help` now return exit code 0 and print usage to stdout, making `--help` a reliable install verification gate for public INSTALL instructions.
+- **init creates missing directories**: `artifact-graph init --root <path>` now creates intermediate directories if they don't exist, matching the documented usage pattern.
+
 ## 0.3.0
 
 ### Added
