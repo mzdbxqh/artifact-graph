@@ -4195,3 +4195,25 @@ export type {
   ManagedHookBlockOptions,
   PreparedManagedHookBlock,
 } from './hook-installer.js';
+
+// Review Result Protocol
+export { validateReviewResult } from './review-result-validator.js';
+export type { ValidationError } from './review-result-validator.js';
+export type {
+  ReviewResult,
+  ReviewStatus,
+  ReviewDecision,
+  Finding,
+  FindingSeverity,
+  FindingStatus,
+  FindingLocation,
+  Evidence,
+  EvidenceObject,
+  Producer,
+  ExecutorType,
+  BatchDefinition,
+  ReviewMetrics,
+  ReviewData,
+  RepairData,
+  RepairValidation,
+} from './review-result-types.js';

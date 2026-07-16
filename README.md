@@ -36,9 +36,16 @@ artifact-graph version-lock audit --root . --strict-missing-lock
 
 - Generate or inspect project artifact graph configuration with `artifact-graph init`.
 - Validate artifact links with `artifact-graph validate`.
+- Validate Review Result Protocol v1.0 documents with `artifact-graph validate-review-result --file <path>`.
 - Build implementation context with `artifact-graph context` or `artifact-graph packet`.
 - Keep traceability freshness with `artifact-graph version-lock refresh` and `audit`.
 - Install opt-in Git hooks with `artifact-graph hooks install-git --hook all`.
+
+## Review Result Protocol
+
+The package publishes `schemas/review-result.schema.json` and a matching TypeScript types + validateReviewResult validator API.
+The protocol is project-neutral and supports review, repair, batch evidence, findings, metrics, and
+fail-closed decisions. Invalid fields are reported with stable JSON paths.
 
 ## Related Project
 

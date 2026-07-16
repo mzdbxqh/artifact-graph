@@ -1,0 +1,246 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://artifact-graph.dev/schemas/review-result/v1.0.schema.json",
+  "title": "Review Result Protocol",
+  "description": "Versioned, machine-verifiable result schema for artifact review, repair, and batch processing workflows. Covers run-level, stage/batch-level, and finding-level results with severity, status, evidence, and repair relationships.",
+  "version": "1.0",
+  "type": "object",
+  "required": ["schema_version", "run_id", "status", "decision", "summary"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Protocol version. Must be '1.0' for this schema."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Unique identifier for this review/repair run."
+    },
+    "stage_id": {
+      "type": "string",
+      "description": "Stage or batch identifier within the run. Omitted for final/run-level results."
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Attempt number for this stage. Defaults to 1."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["SUCCEEDED", "FAILED", "BLOCKED", "NEEDS_INPUT", "SKIPPED"],
+      "description": "Execution status. SUCCEEDED means the stage completed; decision may still be FAIL."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "PASS_WITH_RESIDUAL_MINOR", "BLOCKED", "NEEDS_INPUT", "NOT_APPLICABLE"],
+      "description": "Business decision. PASS means no blocking findings; FAIL means blocking findings remain."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Human-readable summary of the result."
+    },
+    "outputs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Paths to output files produced by this stage."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Non-blocking warning messages."
+    },
+    "blocking_reason": {
+      "type": ["string", "null"],
+      "description": "Reason the stage is blocked. Null if not blocked."
+    },
+    "degradation": {
+      "type": ["string", "null"],
+      "description": "Description of any quality degradation (e.g., partial execution, timeout fallback)."
+    },
+    "producer": {
+      "type": "object",
+      "description": "Identity of what produced this result.",
+      "required": ["executor", "name"],
+      "properties": {
+        "executor": {
+          "type": "string",
+          "enum": ["script", "worker", "agent", "manual", "cli"],
+          "description": "Type of executor."
+        },
+        "name": {
+          "type": "string",
+          "description": "Name of the executor (script filename, worker name, etc.)."
+        },
+        "skill": {
+          "type": "string",
+          "description": "Skill or plugin that owns this executor."
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "type": "string" },
+          {
+            "type": "object",
+            "required": ["type", "path"],
+            "properties": {
+              "type": {
+                "type": "string",
+                "description": "Evidence type (e.g., task, deterministic-result, semantic-report, repair-log)."
+              },
+              "path": { "type": "string" },
+              "status": { "type": "string" },
+              "decision": { "type": "string" },
+              "summary": { "type": "string" },
+              "command": { "type": "string" },
+              "result": { "type": "string" }
+            }
+          }
+        ]
+      },
+      "description": "Evidence items supporting this result."
+    },
+    "review": {
+      "type": "object",
+      "description": "Review-specific data. Present for review stages.",
+      "properties": {
+        "source_files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Files reviewed in this stage."
+        },
+        "files": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "All files in scope for the run."
+        },
+        "batches": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "files"],
+            "properties": {
+              "id": { "type": "string" },
+              "files": { "type": "array", "items": { "type": "string" } },
+              "chars": { "type": "integer" }
+            }
+          },
+          "description": "Batch definitions for batch processing."
+        },
+        "metrics": {
+          "type": "object",
+          "description": "Quantitative metrics for this review.",
+          "properties": {
+            "files_reviewed": { "type": "integer", "minimum": 0 },
+            "files_scanned": { "type": "integer", "minimum": 0 },
+            "findings_count": { "type": "integer", "minimum": 0 },
+            "deterministic_findings_count": { "type": "integer", "minimum": 0 },
+            "semantic_findings_count": { "type": "integer", "minimum": 0 },
+            "block_count": { "type": "integer", "minimum": 0 },
+            "warn_count": { "type": "integer", "minimum": 0 },
+            "info_count": { "type": "integer", "minimum": 0 },
+            "resolved_count": { "type": "integer", "minimum": 0 },
+            "batch_count": { "type": "integer", "minimum": 0 },
+            "scenario_count": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" },
+          "description": "Open findings from this review."
+        },
+        "resolved_findings": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" },
+          "description": "Findings that were resolved (by repair or acceptance)."
+        },
+        "repair_worker_needed": {
+          "type": "boolean",
+          "description": "Whether a repair worker should be dispatched."
+        }
+      }
+    },
+    "repair": {
+      "type": "object",
+      "description": "Repair-specific data. Present for repair stages.",
+      "properties": {
+        "source_review_run_id": { "type": "string" },
+        "source_review_stage_id": { "type": "string" },
+        "findings_addressed": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/finding" }
+        },
+        "files_modified": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "validation_after_repair": {
+          "type": "object",
+          "description": "Re-validation results after repair.",
+          "properties": {
+            "command": { "type": "string" },
+            "exit_code": { "type": "integer" },
+            "findings_remaining": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "required": ["id", "severity", "message"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique finding identifier within the run (e.g., B043-SF-001)."
+        },
+        "severity": {
+          "type": "string",
+          "enum": ["block", "warn", "info"],
+          "description": "Finding severity."
+        },
+        "category": {
+          "type": "string",
+          "description": "Finding category (e.g., structure, semantic, link, format)."
+        },
+        "message": {
+          "type": "string",
+          "description": "Human-readable finding description."
+        },
+        "location": {
+          "type": "object",
+          "properties": {
+            "file": { "type": "string" },
+            "line": { "type": "integer" },
+            "column": { "type": "integer" }
+          }
+        },
+        "artifact_id": {
+          "type": "string",
+          "description": "Related artifact ID (e.g., S-01, A1, D-ARCH-01)."
+        },
+        "evidence": {
+          "type": "string",
+          "description": "Evidence supporting this finding."
+        },
+        "suggested_fix": {
+          "type": "string",
+          "description": "Suggested fix or remediation."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["open", "resolved", "accepted", "superseded"],
+          "description": "Current status of this finding."
+        },
+        "resolved_by": {
+          "type": "string",
+          "description": "How the finding was resolved (e.g., repair, acceptance, superseded by another finding)."
+        }
+      }
+    }
+  }
+}

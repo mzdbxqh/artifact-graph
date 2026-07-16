@@ -652,6 +652,126 @@ declare function prepareManagedHookBlock(options: ManagedHookBlockOptions): Prom
 declare function applyPreparedManagedHookBlocks(prepared: readonly PreparedManagedHookBlock[]): Promise<HookInstallResult[]>;
 declare function installManagedHookBlock(options: ManagedHookBlockOptions): Promise<HookInstallResult>;
 
+/**
+ * Review Result Protocol validator.
+ * @feature ACA16 @scenario S-46
+ *
+ * Validates a JSON object against the review-result.schema.json constraints.
+ * Does NOT use ajv or any JSON-schema library — pure deterministic checks
+ * for zero-dependency CLI use.
+ */
+interface ValidationError {
+    path: string;
+    message: string;
+}
+/**
+ * Validate a review result object against the v1.0 protocol.
+ *
+ * @param input - Parsed JSON to validate (not a string).
+ * @returns Array of validation errors. Empty = valid.
+ */
+declare function validateReviewResult(input: unknown): ValidationError[];
+
+/**
+ * Review Result Protocol v1.0 — TypeScript types.
+ *
+ * Canonical schema: schemas/review-result.schema.json
+ * These types are the programmatic equivalent; keep both in sync.
+ */
+type ReviewStatus = 'SUCCEEDED' | 'FAILED' | 'BLOCKED' | 'NEEDS_INPUT' | 'SKIPPED';
+type ReviewDecision = 'PASS' | 'FAIL' | 'PASS_WITH_RESIDUAL_MINOR' | 'BLOCKED' | 'NEEDS_INPUT' | 'NOT_APPLICABLE';
+type FindingSeverity = 'block' | 'warn' | 'info';
+type FindingStatus = 'open' | 'resolved' | 'accepted' | 'superseded';
+type ExecutorType = 'script' | 'worker' | 'agent' | 'manual' | 'cli';
+interface FindingLocation {
+    file?: string;
+    line?: number;
+    column?: number;
+}
+interface Finding {
+    id: string;
+    severity: FindingSeverity;
+    category?: string;
+    message: string;
+    location?: FindingLocation;
+    artifact_id?: string;
+    evidence?: string;
+    suggested_fix?: string;
+    status?: FindingStatus;
+    resolved_by?: string;
+}
+interface EvidenceObject {
+    type: string;
+    path: string;
+    status?: string;
+    decision?: string;
+    summary?: string;
+    command?: string;
+    result?: string;
+}
+type Evidence = string | EvidenceObject;
+interface Producer {
+    executor: ExecutorType;
+    name: string;
+    skill?: string;
+}
+interface BatchDefinition {
+    id: string;
+    files: string[];
+    chars?: number;
+}
+interface ReviewMetrics {
+    files_reviewed?: number;
+    files_scanned?: number;
+    findings_count?: number;
+    deterministic_findings_count?: number;
+    semantic_findings_count?: number;
+    block_count?: number;
+    warn_count?: number;
+    info_count?: number;
+    resolved_count?: number;
+    batch_count?: number;
+    scenario_count?: number;
+}
+interface ReviewData {
+    source_files?: string[];
+    files?: string[];
+    batches?: BatchDefinition[];
+    metrics?: ReviewMetrics;
+    findings?: Finding[];
+    resolved_findings?: Finding[];
+    repair_worker_needed?: boolean;
+}
+interface RepairValidation {
+    command?: string;
+    exit_code?: number;
+    findings_remaining?: number;
+}
+interface RepairData {
+    source_review_run_id?: string;
+    source_review_stage_id?: string;
+    findings_addressed?: Finding[];
+    files_modified?: string[];
+    validation_after_repair?: RepairValidation;
+}
+interface ReviewResult {
+    schema_version: '1.0';
+    run_id: string;
+    stage_id?: string;
+    attempt?: number;
+    status: ReviewStatus;
+    decision: ReviewDecision;
+    summary: string;
+    outputs?: string[];
+    warnings?: string[];
+    blocking_reason?: string | null;
+    degradation?: string | null;
+    producer?: Producer;
+    evidence?: Evidence[];
+    review?: ReviewData;
+    repair?: RepairData;
+}
+
 interface ArtifactNode {
     uid: string;
     type: string;
@@ -829,4 +949,4 @@ declare function discoverTargets(graph: ArtifactGraph, options?: DiscoverOptions
 declare function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOptions): ContextManifest;
 declare function formatContextMarkdown(manifest: ContextManifest): string;
 
-export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PreparedManagedHookBlock, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type ResolveArtifactGraphCliOptions, type ReviewOrderStep, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, nextId, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, writeGraphCache };
+export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type BatchDefinition, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type Evidence, type EvidenceObject, type ExecutorType, type Finding, type FindingLocation, type FindingSeverity, type FindingStatus, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PreparedManagedHookBlock, type Producer, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type RepairData, type RepairValidation, type ResolveArtifactGraphCliOptions, type ReviewData, type ReviewDecision, type ReviewMetrics, type ReviewOrderStep, type ReviewResult, type ReviewStatus, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationError, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, nextId, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, validateReviewResult, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, writeGraphCache };

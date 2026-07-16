@@ -149,6 +149,29 @@ async function smokeImport(consumerDir) {
   console.log('  import(): OK');
 }
 
+async function smokeSchemaSubpath(consumerDir) {
+  const result = await command('node', [
+    '--input-type=module',
+    '-e',
+    `
+    import { createRequire } from 'node:module';
+    const require = createRequire(import.meta.url);
+    const schema = require('artifact-graph/schemas/review-result.schema.json');
+    console.log(JSON.stringify({
+      hasDollarId: typeof schema['$id'] === 'string',
+      hasType: schema.type === 'object',
+      hasSchemaVersion: Array.isArray(schema.required) && schema.required.includes('schema_version'),
+    }));
+    `,
+  ], { cwd: consumerDir });
+  assert.equal(result.code, 0, `schema subpath import exit ${result.code}: ${result.stderr}`);
+  const check = JSON.parse(result.stdout.trim());
+  assert.equal(check.hasDollarId, true, 'schema missing $id');
+  assert.equal(check.hasType, true, 'schema missing type=object');
+  assert.equal(check.hasSchemaVersion, true, 'schema missing required schema_version');
+  console.log('  schema subpath import: OK');
+}
+
 // --- Main ---
 
 const testRoot = await mkdtemp(join(tmpdir(), 'artifact-graph-npm-consumer-'));
@@ -165,5 +188,6 @@ await smokeScan(consumerDir);
 await smokeValidateJson(consumerDir);
 await smokeDoctorJson(consumerDir);
 await smokeImport(consumerDir);
+await smokeSchemaSubpath(consumerDir);
 
 console.log('\npacked npm consumer: all smoke checks passed');

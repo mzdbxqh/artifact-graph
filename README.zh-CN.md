@@ -34,9 +34,16 @@ artifact-graph version-lock audit --root . --strict-missing-lock
 
 - 用 `artifact-graph init` 生成或检查项目制品图配置。
 - 用 `artifact-graph validate` 校验制品之间的链接。
+- 用 `artifact-graph validate-review-result --file <path>` 校验 Review Result Protocol v1.0 文档。
 - 用 `artifact-graph context` 或 `artifact-graph packet` 构建实现上下文。
 - 用 `artifact-graph version-lock refresh` 和 `audit` 维护追溯新鲜度。
 - 用 `artifact-graph hooks install-git --hook all` 安装可选 Git hooks。
+
+## Review Result Protocol
+
+包内发布 `schemas/review-result.schema.json` 和等价的 TypeScript 类型与 validateReviewResult 校验 API。该协议不绑定具体
+项目，覆盖 review、repair、批次证据、findings、metrics 与 fail-closed decision；非法字段
+会返回稳定的 JSON path 诊断。
 
 ## 相关项目
 

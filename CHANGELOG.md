@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.4.0
+
+### Added
+
+- Add project-neutral Review Result Protocol v1.0 schema, TypeScript types and validateReviewResult validator API.
+- Add `validate-review-result --file <path>` with absolute-path support and JSON-path diagnostics.
+- Include `schemas/review-result.schema.json` in the published package.
+
 ## 0.3.1
 
 ### Fixed

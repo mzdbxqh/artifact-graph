@@ -1,6 +1,6 @@
 {
   "name": "artifact-graph",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "Git-native Markdown artifact graph scanner and validator",
   "license": "Apache-2.0",
   "type": "module",
@@ -28,7 +28,8 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
-    }
+    },
+    "./schemas/review-result.schema.json": "./schemas/review-result.schema.json"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -66,6 +67,7 @@
     "NOTICE",
     "INSTALL.md",
     "dist",
+    "schemas",
     "scripts",
     "templates"
   ],

@@ -2,7 +2,7 @@
 import yaml from 'js-yaml';
 import { realpathSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   assemblePacket,
@@ -28,6 +28,7 @@ import { renderPacketPrompt, DEFAULT_MAX_CHARS, MIN_PROMPT_CHARS } from './packe
 import { validatePacketPrompt } from './packet-prompt-validator.js';
 import { auditPromptBatch, discoverAndAuditPromptBatch } from './packet-prompt-audit.js';
 import { doctorArtifactChain, renderDoctorMarkdown } from './cli-resolver.js';
+import { validateReviewResult } from './review-result-validator.js';
 import { collectChangedPaths } from './git-changes.js';
 import { resolveGitHookPath } from './git-hook-path.js';
 import { applyPreparedManagedHookBlocks, prepareManagedHookBlock } from './hook-installer.js';
@@ -862,6 +863,40 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         }
         return 0;
       }
+      case 'validate-review-result': {
+        const filePath = typeof parsed.flags.file === 'string' ? parsed.flags.file : undefined;
+        if (!filePath) {
+          err('Usage: artifact-graph validate-review-result --file <path> [--format json]\n');
+          return 1;
+        }
+        const resolvedPath = isAbsolute(filePath) ? filePath : join(root, filePath);
+        let content: string;
+        try {
+          content = await readFile(resolvedPath, 'utf-8');
+        } catch (readErr) {
+          err(`Error: Cannot read file: "${resolvedPath}" — ${(readErr as Error).message}\n`);
+          return 1;
+        }
+        let parsed_json: unknown;
+        try {
+          parsed_json = JSON.parse(content);
+        } catch (parseErr) {
+          err(`Error: Invalid JSON in "${resolvedPath}" — ${(parseErr as Error).message}\n`);
+          return 1;
+        }
+        const validationErrors = validateReviewResult(parsed_json);
+        if (parsed.flags.format === 'json') {
+          out(`${JSON.stringify({ valid: validationErrors.length === 0, errors: validationErrors }, null, 2)}\n`);
+        } else if (validationErrors.length === 0) {
+          out('Review result is valid\n');
+        } else {
+          out(`Review result has ${validationErrors.length} error(s):\n`);
+          for (const errItem of validationErrors) {
+            out(`  ${errItem.path}: ${errItem.message}\n`);
+          }
+        }
+        return validationErrors.length === 0 ? 0 : 1;
+      }
       default:
         err(helpText());
         return 1;
@@ -942,6 +977,7 @@ Commands:
   next-id <type> --range <name>
   render [--format mermaid]
   doctor [--format json|markdown]
+  validate-review-result --file <path> [--format json]
 `;
 }
 

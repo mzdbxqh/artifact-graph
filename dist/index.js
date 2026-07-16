@@ -2578,6 +2578,252 @@ function findManagedRange(content, begin, end) {
   };
 }
 
+// src/review-result-validator.ts
+var VALID_STATUSES = /* @__PURE__ */ new Set([
+  "SUCCEEDED",
+  "FAILED",
+  "BLOCKED",
+  "NEEDS_INPUT",
+  "SKIPPED"
+]);
+var VALID_DECISIONS = /* @__PURE__ */ new Set([
+  "PASS",
+  "FAIL",
+  "PASS_WITH_RESIDUAL_MINOR",
+  "BLOCKED",
+  "NEEDS_INPUT",
+  "NOT_APPLICABLE"
+]);
+var VALID_SEVERITIES = /* @__PURE__ */ new Set(["block", "warn", "info"]);
+var VALID_FINDING_STATUSES = /* @__PURE__ */ new Set(["open", "resolved", "accepted", "superseded"]);
+var VALID_EXECUTORS = /* @__PURE__ */ new Set(["script", "worker", "agent", "manual", "cli"]);
+function validateReviewResult(input) {
+  const errors = [];
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return [{ path: "$", message: "Root must be a non-null object" }];
+  }
+  const obj = input;
+  if (obj.schema_version !== "1.0") {
+    errors.push({ path: "$.schema_version", message: `Must be "1.0", got ${JSON.stringify(obj.schema_version)}` });
+  }
+  if (typeof obj.run_id !== "string" || obj.run_id.length === 0) {
+    errors.push({ path: "$.run_id", message: "Must be a non-empty string" });
+  }
+  if (!VALID_STATUSES.has(String(obj.status))) {
+    errors.push({ path: "$.status", message: `Must be one of ${[...VALID_STATUSES].join(", ")}, got ${JSON.stringify(obj.status)}` });
+  }
+  if (!VALID_DECISIONS.has(String(obj.decision))) {
+    errors.push({ path: "$.decision", message: `Must be one of ${[...VALID_DECISIONS].join(", ")}, got ${JSON.stringify(obj.decision)}` });
+  }
+  if (typeof obj.summary !== "string") {
+    errors.push({ path: "$.summary", message: "Must be a string" });
+  }
+  if (obj.stage_id !== void 0 && typeof obj.stage_id !== "string") {
+    errors.push({ path: "$.stage_id", message: "Must be a string if present" });
+  }
+  if (obj.attempt !== void 0 && (!Number.isInteger(obj.attempt) || obj.attempt < 1)) {
+    errors.push({ path: "$.attempt", message: "Must be a positive integer if present" });
+  }
+  if (obj.outputs !== void 0) {
+    checkStringArray(obj.outputs, "$.outputs", errors);
+  }
+  if (obj.warnings !== void 0) {
+    checkStringArray(obj.warnings, "$.warnings", errors);
+  }
+  checkOptionalNullableString(obj.blocking_reason, "$.blocking_reason", errors);
+  checkOptionalNullableString(obj.degradation, "$.degradation", errors);
+  if (obj.producer !== void 0) {
+    if (!isPlainObject(obj.producer)) {
+      errors.push({ path: "$.producer", message: "Must be an object" });
+    } else {
+      const p = obj.producer;
+      if (typeof p.executor !== "string") {
+        errors.push({ path: "$.producer.executor", message: "Must be a string" });
+      } else if (!VALID_EXECUTORS.has(p.executor)) {
+        errors.push({ path: "$.producer.executor", message: `Must be one of ${[...VALID_EXECUTORS].join(", ")}; got ${JSON.stringify(p.executor)}` });
+      }
+      if (typeof p.name !== "string") {
+        errors.push({ path: "$.producer.name", message: "Must be a string" });
+      }
+      checkOptionalString(p.skill, "$.producer.skill", errors);
+    }
+  }
+  if (obj.evidence !== void 0) {
+    if (!Array.isArray(obj.evidence)) {
+      errors.push({ path: "$.evidence", message: "Must be an array" });
+    } else for (let i = 0; i < obj.evidence.length; i++) {
+      const e = obj.evidence[i];
+      if (typeof e === "string") continue;
+      if (isPlainObject(e)) {
+        const ev = e;
+        if (typeof ev.type !== "string") {
+          errors.push({ path: `$.evidence[${i}].type`, message: "Must be a string" });
+        }
+        if (typeof ev.path !== "string") {
+          errors.push({ path: `$.evidence[${i}].path`, message: "Must be a string" });
+        }
+        for (const key of ["status", "decision", "summary", "command", "result"]) {
+          checkOptionalString(ev[key], `$.evidence[${i}].${key}`, errors);
+        }
+      } else {
+        errors.push({ path: `$.evidence[${i}]`, message: "Must be a string or object" });
+      }
+    }
+  }
+  if (obj.review !== void 0) {
+    validateReviewData(obj.review, "$.review", errors);
+  }
+  if (obj.repair !== void 0) {
+    if (!isPlainObject(obj.repair)) {
+      errors.push({ path: "$.repair", message: "Must be an object" });
+    } else {
+      const r = obj.repair;
+      checkOptionalString(r.source_review_run_id, "$.repair.source_review_run_id", errors);
+      checkOptionalString(r.source_review_stage_id, "$.repair.source_review_stage_id", errors);
+      if (r.findings_addressed !== void 0) {
+        validateFindingArray(r.findings_addressed, "$.repair.findings_addressed", errors);
+      }
+      if (r.files_modified !== void 0) {
+        checkStringArray(r.files_modified, "$.repair.files_modified", errors);
+      }
+      if (r.validation_after_repair !== void 0) {
+        validateRepairValidation(r.validation_after_repair, "$.repair.validation_after_repair", errors);
+      }
+    }
+  }
+  return errors;
+}
+function checkStringArray(val, path, errors) {
+  if (!Array.isArray(val)) {
+    errors.push({ path, message: "Must be an array" });
+    return;
+  }
+  for (let i = 0; i < val.length; i++) {
+    if (typeof val[i] !== "string") {
+      errors.push({ path: `${path}[${i}]`, message: "Must be a string" });
+    }
+  }
+}
+function isPlainObject(val) {
+  return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+function checkOptionalString(val, path, errors) {
+  if (val !== void 0 && typeof val !== "string") {
+    errors.push({ path, message: "Must be a string if present" });
+  }
+}
+function checkOptionalNullableString(val, path, errors) {
+  if (val !== void 0 && val !== null && typeof val !== "string") {
+    errors.push({ path, message: "Must be a string or null if present" });
+  }
+}
+function checkOptionalInteger(val, path, errors, minimum) {
+  if (val === void 0) return;
+  if (!Number.isInteger(val) || minimum !== void 0 && val < minimum) {
+    errors.push({ path, message: minimum === void 0 ? "Must be an integer if present" : `Must be an integer >= ${minimum} if present` });
+  }
+}
+function validateFinding(val, path, errors) {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: "Must be a non-null object" });
+    return;
+  }
+  const f = val;
+  if (typeof f.id !== "string" || f.id.length === 0) {
+    errors.push({ path: `${path}.id`, message: "Must be a non-empty string" });
+  }
+  if (!VALID_SEVERITIES.has(String(f.severity))) {
+    errors.push({ path: `${path}.severity`, message: `Must be one of block, warn, info; got ${JSON.stringify(f.severity)}` });
+  }
+  if (typeof f.message !== "string") {
+    errors.push({ path: `${path}.message`, message: "Must be a string" });
+  }
+  if (f.status !== void 0 && !VALID_FINDING_STATUSES.has(String(f.status))) {
+    errors.push({ path: `${path}.status`, message: `Must be one of ${[...VALID_FINDING_STATUSES].join(", ")}; got ${JSON.stringify(f.status)}` });
+  }
+  for (const key of ["category", "artifact_id", "evidence", "suggested_fix", "resolved_by"]) {
+    checkOptionalString(f[key], `${path}.${key}`, errors);
+  }
+  if (f.location !== void 0) {
+    if (!isPlainObject(f.location)) {
+      errors.push({ path: `${path}.location`, message: "Must be an object if present" });
+    } else {
+      checkOptionalString(f.location.file, `${path}.location.file`, errors);
+      checkOptionalInteger(f.location.line, `${path}.location.line`, errors);
+      checkOptionalInteger(f.location.column, `${path}.location.column`, errors);
+    }
+  }
+}
+function validateFindingArray(val, path, errors) {
+  if (!Array.isArray(val)) {
+    errors.push({ path, message: "Must be an array" });
+    return;
+  }
+  for (let i = 0; i < val.length; i++) validateFinding(val[i], `${path}[${i}]`, errors);
+}
+function validateReviewData(val, path, errors) {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: "Must be a non-null object" });
+    return;
+  }
+  const r = val;
+  if (r.source_files !== void 0) checkStringArray(r.source_files, `${path}.source_files`, errors);
+  if (r.files !== void 0) checkStringArray(r.files, `${path}.files`, errors);
+  if (r.findings !== void 0) validateFindingArray(r.findings, `${path}.findings`, errors);
+  if (r.resolved_findings !== void 0) validateFindingArray(r.resolved_findings, `${path}.resolved_findings`, errors);
+  if (r.batches !== void 0) validateBatches(r.batches, `${path}.batches`, errors);
+  if (r.metrics !== void 0) validateMetrics(r.metrics, `${path}.metrics`, errors);
+  if (r.repair_worker_needed !== void 0 && typeof r.repair_worker_needed !== "boolean") {
+    errors.push({ path: `${path}.repair_worker_needed`, message: "Must be a boolean if present" });
+  }
+}
+function validateBatches(val, path, errors) {
+  if (!Array.isArray(val)) {
+    errors.push({ path, message: "Must be an array" });
+    return;
+  }
+  for (let i = 0; i < val.length; i++) {
+    const itemPath = `${path}[${i}]`;
+    const b = val[i];
+    if (!isPlainObject(b)) {
+      errors.push({ path: itemPath, message: "Must be an object" });
+      continue;
+    }
+    if (typeof b.id !== "string") errors.push({ path: `${itemPath}.id`, message: "Must be a string" });
+    checkStringArray(b.files, `${itemPath}.files`, errors);
+    checkOptionalInteger(b.chars, `${itemPath}.chars`, errors);
+  }
+}
+var METRIC_FIELDS = [
+  "files_reviewed",
+  "files_scanned",
+  "findings_count",
+  "deterministic_findings_count",
+  "semantic_findings_count",
+  "block_count",
+  "warn_count",
+  "info_count",
+  "resolved_count",
+  "batch_count",
+  "scenario_count"
+];
+function validateMetrics(val, path, errors) {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: "Must be an object" });
+    return;
+  }
+  for (const key of METRIC_FIELDS) checkOptionalInteger(val[key], `${path}.${key}`, errors, 0);
+}
+function validateRepairValidation(val, path, errors) {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: "Must be an object" });
+    return;
+  }
+  checkOptionalString(val.command, `${path}.command`, errors);
+  checkOptionalInteger(val.exit_code, `${path}.exit_code`, errors);
+  checkOptionalInteger(val.findings_remaining, `${path}.findings_remaining`, errors, 0);
+}
+
 // src/index.ts
 var TARGET_ARTIFACT_TYPES = VALID_PACKET_TARGET_TYPES;
 var NON_TARGET_ROLES = ["context", "candidate", "not-recommended"];
@@ -6023,6 +6269,7 @@ export {
   validatePacket,
   validatePacketMarkdown,
   validatePacketPrompt,
+  validateReviewResult,
   validateScenarioPrdLinkIndex,
   validateScenarioPrdLinks,
   writeGraphCache
