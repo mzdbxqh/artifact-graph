@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.4.1
+
+### Changed
+
+- Version bump for dual-repo synchronization with `artifact-chain-assistant@0.4.1`. No runtime code changes in this package.
+
 ## 0.4.0
 
 ### Added
