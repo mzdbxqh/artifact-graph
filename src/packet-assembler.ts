@@ -112,6 +112,8 @@ export interface ImplementationPacket {
   missingDetails?: MissingDetail[];
   implementationBlueprintDraft: ImplementationBlueprintDraft;
   validationCommands: string[];
+  /** Explicit universal baseline policy: true=enabled, false=disabled. Absent=legacy (pre-0.5) packet. */
+  baselinePolicy?: boolean;
 }
 
 /** Well-known baseline constraints derived from baseline artifacts — imported from packet-constants.ts */
@@ -463,6 +465,9 @@ export function assemblePacket(
     missingDetails: manifest.missingDetails ? [...manifest.missingDetails] : undefined,
     implementationBlueprintDraft: blueprintDraft,
     validationCommands,
+    // @feature ACA17
+    // @decision D-ACA-17
+    baselinePolicy: manifest.baselinePolicy,
   };
 
   return packet;

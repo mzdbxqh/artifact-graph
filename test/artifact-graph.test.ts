@@ -905,6 +905,35 @@ describe('string boundaries', () => {});
     }
   });
 
+  // @feature ACA17 @scenario S-57
+  it('does not treat plain npm scoped packages or directives as traceability tags', async () => {
+    const root = await fixtureRepo('tag-negative');
+    try {
+      await write(root, 'heimdall/packages/core/test/plain-at-tokens.test.ts', [
+        '// @typescript-eslint/no-explicit-any',
+        '// @ts-expect-error — mock injection',
+        'import { app } from "@tauri-apps/api";',
+        '// @heimdall-scan:ignore false positive',
+        '// @theme: dark mode config',
+        'describe("plain at tokens", () => {});',
+        '',
+      ].join('\n'));
+
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config);
+
+      const fakeNodes = graph.nodes.filter((n) => n.type === 'test' && n.path?.includes('plain-at-tokens'));
+      expect(fakeNodes).toEqual([]);
+      const fakeEdges = graph.edges.filter((e) => (e.sourcePath ?? '').includes('plain-at-tokens'));
+      expect(fakeEdges).toEqual([]);
+      const formatIssues = issues.filter((i) => i.code === 'CODE_COMMENT_TRACEABILITY_FORMAT' && i.path?.includes('plain-at-tokens'));
+      expect(formatIssues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('reports PRD to design bidirectional mismatches in both directions', async () => {
     const root = await fixtureRepo('design-mismatch');
     try {
@@ -2387,8 +2416,7 @@ related_scenarios: [S-20]
       // (file exists but has no //@-tc line-comment annotation for this TC)
       const trace003 = issues.filter((issue) => issue.code === 'E2E-TRACE-003');
       expect(trace003.length).toBe(1);
-      expect(trace003[0].message).toContain('no // @tc');
-      expect(trace003[0].message).toContain('line-comment annotation');
+      expect(trace003[0].message).toContain('no E2E trace annotation');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2520,7 +2548,7 @@ related_scenarios: [S-20]
       const trace006 = issues.filter((issue) => issue.code === 'E2E-TRACE-006');
       expect(trace006.length).toBe(1);
       expect(trace006[0].message).toContain('missing valid desktop_chain or ui_sidecar_bridge + partial_rust');
-      expect(trace006[0].message).toContain('has no @tc');
+      expect(trace006[0].message).toContain('has no E2E trace annotation');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -3069,6 +3097,230 @@ related_scenarios: [S-20]
       const desktopWarnings = issues.filter((issue) => issue.code === 'E2E_DESKTOP_CHAIN_WARNING');
       expect(desktopWarnings.length).toBe(1);
       expect(desktopWarnings[0].node).toBe('e2e_test:test-incomplete-status:TC-001');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // @feature ACA17
+  // @scenario S-59
+  // @decision D-ACA-17
+  // New canonical E2E trace tag tests: establishes same e2e_test relationship as legacy tag.
+  it('accepts @e2e_test as equivalent to @tc (bidirectional consistent)', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-test-tag-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
+
+      await writeFile(
+        join(root, 'artifacts/tests/e2e/test-e2e-tag.md'),
+        `---
+test_batch: test-e2e-tag
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: @e2e_test 标签
+
+## TC-001: 使用新标签的测试
+
+**前置条件**:
+- 桌面应用已启动。
+
+**测试步骤**:
+1. 执行操作。
+
+**后置清理**:
+- 无。
+
+**executable_ref**: heimdall/packages/desktop/e2e/new-tag.spec.ts
+
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+`,
+      );
+
+      await writeFile(
+        join(root, 'heimdall/packages/desktop/e2e/new-tag.spec.ts'),
+        `// @e2e_test test-e2e-tag:TC-001 [desktop_chain]
+describe('new tag', () => {
+  test('TC-001: uses @e2e_test', () => {});
+});
+`,
+      );
+
+      const issues = await validateExecutableTraceability(root);
+      const trace003 = issues.filter((issue) => issue.code === 'E2E-TRACE-003');
+      // No mismatch — new tag should be accepted like legacy tag
+      expect(trace003.filter((i) => i.node === 'test-e2e-tag:TC-001').length).toBe(0);
+      // No deprecation warning for new tag
+      const trace007 = issues.filter((issue) => issue.code === 'E2E-TRACE-007');
+      expect(trace007.length).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not duplicate the generic @tc deprecation warning in the E2E validator', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-deprecation-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
+
+      await writeFile(
+        join(root, 'artifacts/tests/e2e/test-deprecation.md'),
+        `---
+test_batch: test-deprecation
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: deprecated 标签
+
+## TC-001: 旧标签测试
+
+**前置条件**:
+- 桌面应用已启动。
+
+**测试步骤**:
+1. 执行操作。
+
+**后置清理**:
+- 无。
+
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+`,
+      );
+
+      // File with deprecated tag
+      await writeFile(
+        join(root, 'heimdall/packages/desktop/e2e/old-tag.spec.ts'),
+        `// @tc test-deprecation:TC-001 [desktop_chain]
+describe('old tag', () => {
+  test('TC-001: uses @tc', () => {});
+});
+`,
+      );
+
+      const executableIssues = await validateExecutableTraceability(root);
+      expect(executableIssues.filter((issue) => issue.code === 'E2E-TRACE-007')).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('warns E2E-TRACE-002 for @e2e_test referencing non-existent batch', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-trace-002-newtag-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
+
+      await writeFile(
+        join(root, 'artifacts/tests/e2e/test-e2e-002.md'),
+        `---
+test_batch: test-e2e-002
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: @e2e_test 引用不存在的 batch
+
+## TC-001: 有效测试用例
+
+**前置条件**:
+- 桌面应用已启动。
+
+**测试步骤**:
+1. 执行操作。
+
+**后置清理**:
+- 无。
+
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+`,
+      );
+
+      await writeFile(
+        join(root, 'heimdall/packages/desktop/e2e/orphan-newtag.spec.ts'),
+        `// @e2e_test test-e2e-002:TC-999 [desktop_chain]
+describe('orphan', () => {
+  test('TC-001: orphaned annotation', () => {});
+});
+`,
+      );
+
+      const issues = await validateExecutableTraceability(root);
+      const trace002 = issues.filter((issue) => issue.code === 'E2E-TRACE-002');
+      expect(trace002.length).toBeGreaterThanOrEqual(1);
+      expect(trace002[0].message).toContain('TC-999');
+      // Error message should use neutral "E2E trace annotation"
+      expect(trace002[0].message).toContain('E2E trace annotation');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('warns E2E-TRACE-003 for @e2e_test missing in executable_ref target', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-trace-003-newtag-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
+
+      await writeFile(
+        join(root, 'artifacts/tests/e2e/test-e2e-003.md'),
+        `---
+test_batch: test-e2e-003
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: executable_ref 有但 @e2e_test 缺失
+
+## TC-001: 不一致测试
+
+**前置条件**:
+- 桌面应用已启动。
+
+**测试步骤**:
+1. 执行操作。
+
+**后置清理**:
+- 无。
+
+**executable_ref**: heimdall/packages/desktop/e2e/mismatch.spec.ts
+
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+`,
+      );
+
+      // File has test but no E2E trace annotation
+      await writeFile(
+        join(root, 'heimdall/packages/desktop/e2e/mismatch.spec.ts'),
+        `describe('mismatch', () => {
+  test('TC-001: no annotation', () => {});
+});
+`,
+      );
+
+      const issues = await validateExecutableTraceability(root);
+      const trace003 = issues.filter((issue) => issue.code === 'E2E-TRACE-003');
+      expect(trace003.length).toBeGreaterThanOrEqual(1);
+      expect(trace003[0].message).toContain('E2E trace annotation');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -5293,18 +5545,11 @@ describe('implementation context resolver', () => {
     const root = await contextFixtureRepo('feature');
     try {
       const graph = await scanArtifacts(root, await loadConfig(root));
-      const manifest = resolveArtifactContext(graph, { feature: 'A1' });
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', universalBaseline: false });
 
       expect(manifest.target.type).toBe('feature');
       expect(manifest.target.id).toBe('A1');
       expect(manifest.target.uid).toBe('feature:A1');
-
-      // Should include baseline files (required)
-      expect(manifest.context['baseline']).toBeDefined();
-      expect(manifest.context['baseline'].some((i) => i.path === 'AGENTS.md' && i.required)).toBe(true);
-      expect(manifest.context['baseline'].some((i) => i.path === 'CLAUDE.md' && i.required)).toBe(true);
-      expect(manifest.context['baseline'].some((i) => i.path === 'artifacts/contracts/interface-contracts.md' && i.required)).toBe(true);
-      expect(manifest.context['baseline'].some((i) => i.path === 'artifacts/traceability-matrix-v2.md' && i.required)).toBe(true);
 
       // Should include the target itself
       expect(manifest.context['target']).toBeDefined();
@@ -5319,11 +5564,6 @@ describe('implementation context resolver', () => {
       // Should include related design
       expect(manifest.context['design']).toBeDefined();
 
-      // Matrix is now part of baseline; verify matrix reason is merged
-      const matrixBaseline = manifest.context['baseline']?.find((i) => i.path === 'artifacts/traceability-matrix-v2.md');
-      expect(matrixBaseline).toBeDefined();
-      expect(matrixBaseline!.reason).toContain('matrix row for A1');
-
       // Should have no missing items
       expect(manifest.missing).toEqual([]);
     } finally {
@@ -5335,7 +5575,7 @@ describe('implementation context resolver', () => {
     const root = await contextFixtureRepo('scenario');
     try {
       const graph = await scanArtifacts(root, await loadConfig(root));
-      const manifest = resolveArtifactContext(graph, { scenario: 'S-01' });
+      const manifest = resolveArtifactContext(graph, { scenario: 'S-01', universalBaseline: false });
 
       expect(manifest.target.type).toBe('scenario');
       expect(manifest.target.id).toBe('S-01');
@@ -5350,11 +5590,6 @@ describe('implementation context resolver', () => {
       // Should include entity (E-083) via matrix upstream cross-artifact edge
       expect(manifest.context['entity']).toBeDefined();
 
-      // Matrix is now part of baseline; verify matrix reason is merged
-      const matrixBaseline = manifest.context['baseline']?.find((i) => i.path === 'artifacts/traceability-matrix-v2.md');
-      expect(matrixBaseline).toBeDefined();
-      expect(matrixBaseline!.reason).toContain('matrix row for S-01');
-
       expect(manifest.missing).toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -5365,7 +5600,7 @@ describe('implementation context resolver', () => {
     const root = await contextFixtureRepo('decision');
     try {
       const graph = await scanArtifacts(root, await loadConfig(root));
-      const manifest = resolveArtifactContext(graph, { decision: 'D-ARCH-01' });
+      const manifest = resolveArtifactContext(graph, { decision: 'D-ARCH-01', universalBaseline: false });
 
       expect(manifest.target.type).toBe('decision');
       expect(manifest.target.id).toBe('D-ARCH-01');
@@ -5378,11 +5613,6 @@ describe('implementation context resolver', () => {
 
       // Should include entity (E-083) via matrix cross-artifact edge
       expect(manifest.context['entity']).toBeDefined();
-
-      // Matrix is now part of baseline; verify matrix reason is merged
-      const matrixBaseline = manifest.context['baseline']?.find((i) => i.path === 'artifacts/traceability-matrix-v2.md');
-      expect(matrixBaseline).toBeDefined();
-      expect(matrixBaseline!.reason).toContain('matrix row for D-ARCH-01');
 
       expect(manifest.missing).toEqual([]);
     } finally {
@@ -5465,11 +5695,11 @@ describe('implementation context resolver', () => {
     }
   });
 
-  it('has empty missingDetails when no missing items', async () => {
+  it('has empty missingDetails when no missing items (opt-out baseline)', async () => {
     const root = await contextFixtureRepo('no-missing-details');
     try {
       const graph = await scanArtifacts(root, await loadConfig(root));
-      const manifest = resolveArtifactContext(graph, { feature: 'A1' });
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', universalBaseline: false });
 
       expect(manifest.missing).toEqual([]);
       expect(manifest.missingDetails).toBeDefined();
@@ -5659,14 +5889,40 @@ describe('implementation context resolver', () => {
     }
   });
 
-  it('baseline contains exactly the 19 key files', async () => {
+  it('baseline contains exactly the 19 key files and missing is empty when all exist', async () => {
     const root = await contextFixtureRepo('baseline-19');
     try {
+      // Create all 19 baseline files so they appear in graph nodes
+      const baselineFiles = [
+        'AGENTS.md',
+        'CLAUDE.md',
+        'artifacts/artifact-chain-spec.md',
+        'artifacts/blueprints/generation-packet-spec.md',
+        'artifacts/blueprints/implementation-blueprint.md',
+        'artifacts/contracts/interface-contracts.md',
+        'artifacts/contracts/data-contracts.md',
+        'artifacts/contracts/application-state-machines.md',
+        'artifacts/contracts/error-model.md',
+        'artifacts/contracts/report-contracts.md',
+        'artifacts/contracts/ui-flow-contracts.md',
+        'artifacts/contracts/non-functional-budgets.md',
+        'artifacts/domain/domain-glossary.md',
+        'artifacts/domain/bounded-context-map.md',
+        'artifacts/domain/domain-invariants.md',
+        'artifacts/tests/rule-golden-cases.md',
+        'artifacts/tests/verification-fixtures.md',
+        'artifacts/design/test-strategy.md',
+      ];
+      for (const f of baselineFiles) {
+        await write(root, f, `# ${f}\n`);
+      }
+
       const graph = await scanArtifacts(root, await loadConfig(root));
-      const manifest = resolveArtifactContext(graph, { feature: 'A1' });
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', root });
 
       const baselinePaths = manifest.context['baseline'].map((i) => i.path);
-      const expectedPaths = [
+
+      expect(baselinePaths.sort()).toEqual([
         'AGENTS.md',
         'CLAUDE.md',
         'artifacts/artifact-chain-spec.md',
@@ -5686,11 +5942,199 @@ describe('implementation context resolver', () => {
         'artifacts/tests/verification-fixtures.md',
         'artifacts/design/test-strategy.md',
         'artifacts/traceability-matrix-v2.md',
-      ];
-
-      expect(baselinePaths.sort()).toEqual(expectedPaths.sort());
+      ].sort());
       expect(manifest.context['baseline'].every((i) => i.required === true)).toBe(true);
       expect(manifest.context['baseline'].every((i) => i.tier === 'baseline')).toBe(true);
+      // All baseline files exist on disk → no missing baseline entries
+      const missingBaseline = manifest.missingDetails!.filter((d) => d.kind === 'missing-baseline');
+      expect(missingBaseline).toHaveLength(0);
+      expect(manifest.missing).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── Universal baseline fail-closed tests ──
+
+  it('reports missing baseline files when graph lacks ALWAYS_PRESENT items', async () => {
+    const root = await contextFixtureRepo('baseline-missing');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', root });
+
+      // traceability-matrix-v2.md exists in graph; other baseline files do not
+      const missingBaseline = manifest.missingDetails!.filter((d) => d.kind === 'missing-baseline');
+      expect(missingBaseline.length).toBeGreaterThan(0);
+      expect(missingBaseline.every((d) => d.suggestedAction.includes('创建文件'))).toBe(true);
+
+      // The one baseline file that exists in graph should NOT be in missing
+      expect(manifest.missing.some((m) => m.includes('traceability-matrix-v2.md'))).toBe(false);
+
+      // But baseline items that don't exist should be in missing
+      expect(manifest.missing.some((m) => m.includes('AGENTS.md'))).toBe(true);
+      expect(manifest.missing.some((m) => m.includes('CLAUDE.md'))).toBe(true);
+
+      // Baseline items should still appear in context (injected before existence check)
+      expect(manifest.context['baseline']).toBeDefined();
+      expect(manifest.context['baseline'].some((i) => i.path === 'AGENTS.md')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('universalBaseline: false skips baseline injection entirely', async () => {
+    const root = await contextFixtureRepo('baseline-optout');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', universalBaseline: false });
+
+      // No baseline category when opt-out
+      expect(manifest.context['baseline']).toBeUndefined();
+      // No missing baseline entries
+      expect(manifest.missingDetails!.filter((d) => d.kind === 'missing-baseline')).toHaveLength(0);
+      expect(manifest.missing).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── Universal baseline policy tests ──
+  // @feature ACA17
+  // @scenario S-60
+  // @scenario S-61
+  // @scenario S-62
+
+  it('sets baselinePolicy=true in manifest when universal baseline enabled', async () => {
+    const root = await contextFixtureRepo('baseline-policy-enabled');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', root });
+      expect(manifest.baselinePolicy).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('sets baselinePolicy=false in manifest when universal baseline explicitly disabled', async () => {
+    const root = await contextFixtureRepo('baseline-policy-disabled');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', universalBaseline: false });
+      expect(manifest.baselinePolicy).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fail-closed: reports all baseline items as missing when baseline enabled but no root', async () => {
+    const root = await contextFixtureRepo('baseline-noroot');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      // Use a graph without root to simulate missing root on both sides
+      const graphNoRoot: ArtifactGraph = { nodes: graph.nodes, edges: graph.edges, generatedAt: graph.generatedAt };
+      // Call without opts.root and graph.root — should fail-closed
+      const manifest = resolveArtifactContext(graphNoRoot, { feature: 'A1', universalBaseline: true });
+      expect(manifest.baselinePolicy).toBe(true);
+      // All 19 baseline items should be reported as missing
+      const missingBaseline = manifest.missingDetails!.filter((d) => d.kind === 'missing-baseline');
+      expect(missingBaseline.length).toBe(19);
+      expect(manifest.missing.some((m) => m.includes('Cannot verify baseline without root'))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('fail-closed: graph without root field and no opts.root reports all baseline items as missing', async () => {
+    const root = await contextFixtureRepo('baseline-graph-noroot');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      // Simulate graph without root (like a consumer that builds graph literal)
+      const graphNoRoot: ArtifactGraph = { nodes: graph.nodes, edges: graph.edges, generatedAt: graph.generatedAt };
+      expect(graphNoRoot.root).toBeUndefined();
+      const manifest = resolveArtifactContext(graphNoRoot, { feature: 'A1', universalBaseline: true });
+      expect(manifest.baselinePolicy).toBe(true);
+      const missingBaseline = manifest.missingDetails!.filter((d) => d.kind === 'missing-baseline');
+      expect(missingBaseline.length).toBe(19);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scan→resolve: opts.root omitted but graph.root provides project root for baseline verification', async () => {
+    const root = await contextFixtureRepo('baseline-graph-root');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      // graph.root should be populated by scanArtifacts
+      expect(graph.root).toBeDefined();
+      expect(graph.root).toBe(root);
+      // resolveArtifactContext without opts.root should use graph.root
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', universalBaseline: true });
+      expect(manifest.baselinePolicy).toBe(true);
+      // Should use graph.root for file existence checks — AGENTS.md is missing from fixture
+      expect(manifest.missing.some((m) => m.includes('AGENTS.md'))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── S-61: loadConfig rejects non-boolean universal_baseline ──
+  // @feature ACA17
+  // @scenario S-61
+  // @decision D-ACA-17
+
+  it.each([
+    [0, 'number 0'],
+    ['', 'empty string'],
+    ['false', 'string "false"'],
+    [1, 'number 1'],
+    ['true', 'string "true"'],
+  ])('S-61: loadConfig rejects context.universal_baseline=%j (%s)', async (value, _label) => {
+    const root = await contextFixtureRepo(`baseline-invalid-${typeof value}-${String(value)}`);
+    try {
+      await write(root, 'artifact-graph.config.yaml', `context:\n  universal_baseline: ${JSON.stringify(value)}\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/Invalid context\.universal_baseline/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // ── S-62: baseline directory and unreadable file detection ──
+  // @feature ACA17
+  // @scenario S-62
+  // @decision D-ACA-17
+
+  it('S-62: directory masquerading as baseline file is reported in missing', async () => {
+    const root = await contextFixtureRepo('baseline-directory');
+    try {
+      // Create AGENTS.md as a directory instead of a file
+      await mkdir(join(root, 'AGENTS.md'), { recursive: true });
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', root });
+      const dirMissing = manifest.missingDetails!.filter(
+        (d) => d.kind === 'missing-baseline' && d.message.includes('not a regular file') && d.ref === 'AGENTS.md',
+      );
+      expect(dirMissing.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('S-62: unreadable baseline file is reported in missing', async () => {
+    const root = await contextFixtureRepo('baseline-unreadable');
+    try {
+      // Create AGENTS.md with no read permissions
+      const agentsPath = join(root, 'AGENTS.md');
+      await write(root, 'AGENTS.md', '# AGENTS\n');
+      const { chmodSync } = await import('node:fs');
+      chmodSync(agentsPath, 0o000);
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const manifest = resolveArtifactContext(graph, { feature: 'A1', root });
+      const unreadableMissing = manifest.missingDetails!.filter(
+        (d) => d.kind === 'missing-baseline' && d.message.includes('not readable') && d.ref === 'AGENTS.md',
+      );
+      expect(unreadableMissing.length).toBeGreaterThanOrEqual(1);
+      // Cleanup: restore permissions before rm
+      chmodSync(agentsPath, 0o644);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -7313,7 +7757,7 @@ describe('order', () => {});
     }
   });
 
-  it('produces INVALID_TRACEABILITY_TAG diagnostic for unknown @type in source code', async () => {
+  it('ignores an unknown @type that is not registered in the schema', async () => {
     const root = await fixtureRepo('custom-traceability-unknown-type');
     try {
       await writeFile(
@@ -7342,12 +7786,123 @@ public class UnknownType {}
         to: expect.stringContaining('X-001'),
       }));
 
-      // Should produce an invalid comment diagnostic
+      // Unknown annotations belong to other tools and are not traceability attempts.
       const node = graph.nodes.find((n) => n.uid === 'implementation:src/UnknownType.java');
-      expect(node).toBeDefined();
-      const invalidComments = node!.attrs?.invalidTraceabilityComments;
-      expect(Array.isArray(invalidComments)).toBe(true);
-      expect(invalidComments.length).toBeGreaterThanOrEqual(1);
+      expect(node?.attrs?.invalidTraceabilityComments ?? []).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  // @feature ACA17 @scenario S-58
+  it('reports registered traceability tags with empty IDs while ignoring unknown annotations and directives', async () => {
+    const root = await fixtureRepo('empty-registered-traceability-id');
+    try {
+      await write(root, 'tests/empty.test.ts', [
+        '// @feature',
+        '// @feature' + ' ',
+        '// @unknown X-001',
+        '// @feature/example',
+        '// @feature(example)',
+        "test('empty IDs', () => {});",
+        '',
+      ].join('\n'));
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  test:
+    paths: ["tests/**/*.ts"]
+idPatterns:
+  feature: '^[A-Z]{1,4}\\d+$'
+statuses: [planned, active, done, deprecated, accepted]
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const issues = validateGraph(graph, config).filter((entry) => entry.code === 'CODE_COMMENT_TRACEABILITY_FORMAT');
+      expect(issues).toHaveLength(2);
+      expect(issues.map((entry) => entry.line)).toEqual([1, 2]);
+      expect(issues.every((entry) => entry.message.includes('valid ID'))).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('emits one generic @tc deprecation warning under any configured test path and none for @e2e_test', async () => {
+    const root = await fixtureRepo('global-tc-deprecation');
+    try {
+      await write(root, 'custom/legacy.mjs', `// @tc batch:TC-001\nexport const legacy = true;\n`);
+      await write(root, 'custom/canonical.mjs', `// @e2e_test batch:TC-001\nexport const canonical = true;\n`);
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  test:
+    paths: ["custom/**/*.mjs"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+idPatterns:
+  e2e_test: '^.+:(TC-\\d+|FILE)$'
+statuses: [planned, active, done, deprecated, accepted]
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const warnings = validateGraph(graph, config).filter((entry) => entry.code === 'E2E-TRACE-007');
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toEqual(expect.objectContaining({ path: 'custom/legacy.mjs', line: 1, severity: 'warning' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('maps legacy @tc and canonical @e2e_test to the same e2e_test node type', async () => {
+    const root = await fixtureRepo('tc-alias-generic-graph');
+    try {
+      await write(root, 'src/legacy.ts', `// @tc test-batch:TC-001\nexport const legacy = true;\n`);
+      await write(root, 'src/canonical.ts', `// @e2e_test test-batch:TC-001\nexport const canonical = true;\n`);
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  test:
+    paths: ["src/**/*.ts"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+idPatterns:
+  e2e_test: '^.+:(TC-\\d+|FILE)$'
+statuses: [planned, active, done, deprecated, accepted]
+`);
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/legacy.ts',
+        to: 'e2e_test:test-batch:TC-001',
+        kind: 'implements',
+      }));
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/canonical.ts',
+        to: 'e2e_test:test-batch:TC-001',
+        kind: 'implements',
+      }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('merges custom e2e_test aliases with defaults so legacy @tc remains recognized', async () => {
+    const root = await fixtureRepo('tc-default-alias-merge');
+    try {
+      await write(root, 'src/legacy.ts', `// @tc test-batch:TC-001\nexport const legacy = true;\n`);
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  test:
+    paths: ["src/**/*.ts"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+    aliases: ["custom-e2e"]
+idPatterns:
+  e2e_test: '^.+:(TC-\\d+|FILE)$'
+statuses: [planned, active, done, deprecated, accepted]
+`);
+      const config = await loadConfig(root);
+      expect(getArtifactTypeMetadata(config, 'e2e_test')?.aliases).toEqual(expect.arrayContaining(['custom-e2e', 'tc']));
+      const graph = await scanArtifacts(root, config);
+      expect(graph.edges).toContainEqual(expect.objectContaining({
+        from: 'implementation:src/legacy.ts',
+        to: 'e2e_test:test-batch:TC-001',
+        kind: 'implements',
+      }));
     } finally {
       await rm(root, { recursive: true, force: true });
     }

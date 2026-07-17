@@ -2,9 +2,10 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://artifact-graph.dev/schemas/review-result/v1.0.schema.json",
   "title": "Review Result Protocol",
-  "description": "Versioned, machine-verifiable result schema for artifact review, repair, and batch processing workflows. Covers run-level, stage/batch-level, and finding-level results with severity, status, evidence, and repair relationships.",
+  "description": "Versioned, machine-verifiable result schema for artifact review, repair, and batch processing workflows. Covers run-level, stage/batch-level, and finding-level results with severity, status, evidence, and repair relationships. Cross-object producer/reviewer identity comparison requires the semantic TypeScript validator because JSON Schema cannot compare field values.",
   "version": "1.0",
   "type": "object",
+  "additionalProperties": false,
   "required": ["schema_version", "run_id", "status", "decision", "summary"],
   "properties": {
     "schema_version": {
@@ -24,6 +25,7 @@
     "attempt": {
       "type": "integer",
       "minimum": 1,
+      "maximum": 3,
       "description": "Attempt number for this stage. Defaults to 1."
     },
     "status": {
@@ -75,6 +77,25 @@
         "skill": {
           "type": "string",
           "description": "Skill or plugin that owns this executor."
+        }
+      }
+    },
+    "acceptance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Independent re-review identity and the repair result being accepted. The semantic validator compares stable executor+name identity (skill is metadata) and rejects self-acceptance.",
+      "required": ["reviewer", "source_result"],
+      "properties": {
+        "reviewer": { "$ref": "#/$defs/producer" },
+        "source_result": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["run_id", "producer"],
+          "properties": {
+            "run_id": { "type": "string", "minLength": 1 },
+            "stage_id": { "type": "string" },
+            "producer": { "$ref": "#/$defs/producer" }
+          }
         }
       }
     },
@@ -189,7 +210,59 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["status", "decision"],
+        "properties": {
+          "status": { "const": "SUCCEEDED" },
+          "decision": { "enum": ["PASS", "PASS_WITH_RESIDUAL_MINOR"] }
+        }
+      },
+      "then": { "required": ["producer"] }
+    },
+    {
+      "if": {
+        "required": ["decision"],
+        "properties": {
+          "decision": { "enum": ["PASS", "PASS_WITH_RESIDUAL_MINOR"] }
+        }
+      },
+      "then": {
+        "not": {
+          "required": ["review"],
+          "properties": {
+            "review": {
+              "required": ["findings"],
+              "properties": {
+                "findings": {
+                  "contains": {
+                    "type": "object",
+                    "required": ["severity"],
+                    "properties": { "severity": { "const": "block" } },
+                    "anyOf": [
+                      { "not": { "required": ["status"] } },
+                      { "required": ["status"], "properties": { "status": { "const": "open" } } }
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
+    "producer": {
+      "type": "object",
+      "required": ["executor", "name"],
+      "properties": {
+        "executor": { "type": "string", "enum": ["script", "worker", "agent", "manual", "cli"] },
+        "name": { "type": "string", "minLength": 1 },
+        "skill": { "type": "string" }
+      }
+    },
     "finding": {
       "type": "object",
       "required": ["id", "severity", "message"],

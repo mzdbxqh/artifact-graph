@@ -1351,3 +1351,144 @@ related_features: [A1]
     expect(pkt002).toHaveLength(0);
   });
 });
+
+// ── Universal baseline config fallback tests ──
+// @feature ACA17
+// @scenario S-64
+// @decision D-ACA-17
+
+describe('packet-audit: universal baseline config fallback', () => {
+  async function noBaselineRepo(name: string, configExtra?: string): Promise<string> {
+    const root = join(tmpdir(), `audit-no-baseline-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    const configContent = configExtra
+      ? `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n${configExtra}`
+      : `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`;
+    await write(root, 'artifact-graph.config.yaml', configContent);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+---
+# A1: Skill import/register
+`);
+    return root;
+  }
+
+  it('discoverAndAuditPackets falls back to config.context.universal_baseline when option omitted', async () => {
+    const root = await noBaselineRepo('api-fallback', 'context:\n  universal_baseline: false\n');
+    // Do NOT pass universalBaseline in options — it should fall back to config.context.universal_baseline=false
+    const summary = await discoverAndAuditPackets(root, {
+      root,
+      summaryOnly: true,
+    });
+    // With baseline disabled, targets should pass (no missing baseline files)
+    expect(summary.total).toBeGreaterThanOrEqual(1);
+    expect(summary.failed).toBe(0);
+  });
+
+  it('discoverAndAuditPackets defaults to baseline enabled when config has no universal_baseline', async () => {
+    const root = await noBaselineRepo('api-default-baseline');
+    const summary = await discoverAndAuditPackets(root, {
+      root,
+      summaryOnly: true,
+    });
+    // With baseline defaulting to enabled and no baseline files, should fail
+    expect(summary.total).toBeGreaterThanOrEqual(1);
+    expect(summary.failed).toBeGreaterThan(0);
+  });
+});
+
+// ── CLI baseline quadrant regression ──
+// @feature ACA17
+// @scenario S-64
+// @decision D-ACA-17
+//
+// Four-quadrant coverage for --targets-file / --discover × default baseline / explicit opt-out.
+// Uses noBaselineRepo to avoid baseline files that would mask the default behavior.
+// Does NOT use global universal_baseline opt-out fixture — each quadrant sets its own config.
+
+describe('CLI baseline quadrant regression', () => {
+  async function noBaselineRepo(name: string, configExtra?: string): Promise<string> {
+    const root = join(tmpdir(), `audit-quadrant-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    const configContent = configExtra
+      ? `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n${configExtra}`
+      : `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`;
+    await write(root, 'artifact-graph.config.yaml', configContent);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+---
+# A1: Skill import/register
+`);
+    return root;
+  }
+
+  it('targets-file + default baseline (missing files) → exit 1', async () => {
+    const root = await noBaselineRepo('cli-tf-default');
+    const outDir = join(tmpdir(), `cli-tf-default-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const targetsFile = join(root, 'targets.txt');
+    await writeFile(targetsFile, 'feature:A1\n');
+
+    const io = captureIo();
+    const code = await runCli(['packet-audit', '--root', root, '--targets-file', targetsFile, '--out-dir', outDir, '--format', 'json'], io);
+    expect(code).toBe(1);
+
+    const output = JSON.parse(io.stdoutText);
+    expect(output.total).toBe(1);
+    expect(output.failed).toBe(1);
+    expect(output.targets[0].status).toBe('failed');
+    // Failures include missing-baseline errors from PKT-007
+    const missingErrors = output.targets[0].errors.filter((e: string) => e.startsWith('missing:'));
+    expect(missingErrors.length).toBeGreaterThan(0);
+  });
+
+  it('targets-file + explicit baseline opt-out → exit 0', async () => {
+    const root = await noBaselineRepo('cli-tf-false', 'context:\n  universal_baseline: false\n');
+    const outDir = join(tmpdir(), `cli-tf-false-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    const targetsFile = join(root, 'targets.txt');
+    await writeFile(targetsFile, 'feature:A1\n');
+
+    const io = captureIo();
+    const code = await runCli(['packet-audit', '--root', root, '--targets-file', targetsFile, '--out-dir', outDir, '--format', 'json'], io);
+    expect(code).toBe(0);
+
+    const output = JSON.parse(io.stdoutText);
+    expect(output.total).toBe(1);
+    expect(output.passed).toBe(1);
+    expect(output.failed).toBe(0);
+    expect(output.targets[0].status).toBe('passed');
+  });
+
+  it('discover + default baseline (missing files) → exit 1', async () => {
+    const root = await noBaselineRepo('cli-disc-default');
+    const outDir = join(tmpdir(), `cli-disc-default-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    const io = captureIo();
+    const code = await runCli(['packet-audit', '--root', root, '--discover', '--out-dir', outDir, '--format', 'json'], io);
+    expect(code).toBe(1);
+
+    const output = JSON.parse(io.stdoutText);
+    expect(output.total).toBeGreaterThanOrEqual(1);
+    expect(output.failed).toBeGreaterThan(0);
+    // At least one target should fail with missing-baseline
+    const failedTargets = output.targets.filter((t: { status: string }) => t.status === 'failed');
+    expect(failedTargets.length).toBeGreaterThan(0);
+  });
+
+  it('discover + explicit baseline opt-out → exit 0', async () => {
+    const root = await noBaselineRepo('cli-disc-false', 'context:\n  universal_baseline: false\n');
+    const outDir = join(tmpdir(), `cli-disc-false-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+
+    const io = captureIo();
+    const code = await runCli(['packet-audit', '--root', root, '--discover', '--out-dir', outDir, '--format', 'json'], io);
+    expect(code).toBe(0);
+
+    const output = JSON.parse(io.stdoutText);
+    expect(output.total).toBeGreaterThanOrEqual(1);
+    expect(output.failed).toBe(0);
+    expect(output.passed).toBe(output.total);
+  });
+});

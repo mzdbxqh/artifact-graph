@@ -1,6 +1,6 @@
 {
   "name": "artifact-graph",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Git-native Markdown artifact graph scanner and validator",
   "license": "Apache-2.0",
   "type": "module",
@@ -55,6 +55,7 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.20",
+    "ajv": "^8.20.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.1.0"

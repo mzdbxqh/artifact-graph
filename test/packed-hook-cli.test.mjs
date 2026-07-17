@@ -208,6 +208,39 @@ async function verifyRealGitExecution(cli, testRoot) {
   ]);
 }
 
+async function verifyConfigStagedAllMode(cli, testRoot) {
+  const root = join(testRoot, 'config-staged-all');
+  await initRepository(root);
+  const fakeCli = join(root, 'node_modules/.bin/artifact-graph');
+  const log = join(root, 'hook.log');
+  await mkdir(dirname(fakeCli), { recursive: true });
+  await writeFile(fakeCli, '#!/bin/sh\nprintf "%s\\n" "$*" >> "$HOOK_LOG"\nexit 0\n');
+  await chmod(fakeCli, 0o755);
+  await writeFile(log, '');
+
+  assert.equal((await runCli(cli, root, ['--hook', 'all'])).code, 0);
+
+  await mkdir(join(root, 'artifacts'), { recursive: true });
+  await writeFile(join(root, 'artifacts/traceability-version-lock.json'), 'initial\n');
+  await git(root, ['add', 'artifacts/traceability-version-lock.json']);
+  await git(root, [
+    '-c', 'user.name=Packed Hook Test',
+    '-c', 'user.email=packed-hook@example.invalid',
+    'commit', '--quiet', '-m', 'lock',
+  ]);
+
+  await writeFile(join(root, 'artifact-graph.config.yaml'), 'types: {}\n');
+  await git(root, ['add', 'artifact-graph.config.yaml']);
+
+  await git(root, [
+    '-c', 'user.name=Packed Hook Test',
+    '-c', 'user.email=packed-hook@example.invalid',
+    'commit', '--quiet', '-m', 'config change',
+  ], { env: { ...process.env, HOOK_LOG: log } });
+
+  assert.equal((await readFile(log, 'utf8')).trim(), 'version-lock refresh --all --format markdown');
+}
+
 async function verifyFourLayouts(cli, testRoot) {
   const cases = [];
   const normal = join(testRoot, 'layout-normal');
@@ -248,4 +281,5 @@ await verifySymlinkRefusal(cli, testRoot);
 await verifyExactLifecycle(cli, testRoot);
 await verifyRealGitExecution(cli, testRoot);
 await verifyFourLayouts(cli, testRoot);
+await verifyConfigStagedAllMode(cli, testRoot);
 console.log('packed hook CLI: all scenarios passed');

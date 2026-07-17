@@ -2,8 +2,9 @@
 import Database from "better-sqlite3";
 import matter from "gray-matter";
 import yaml from "js-yaml";
+import { accessSync, constants as fsConstants, statSync } from "fs";
 import { mkdir as mkdir4, readFile as readFile2, readdir, writeFile as writeFile3 } from "fs/promises";
-import { basename as basename2, dirname as dirname3, extname, join as join5, relative as relative2 } from "path";
+import { basename as basename2, dirname as dirname3, extname, isAbsolute as isAbsolute3, join as join5, relative as relative2, resolve as resolve3 } from "path";
 
 // src/packet-constants.ts
 var ALWAYS_PRESENT_ITEMS = [
@@ -82,13 +83,76 @@ function validatePacket(packet, schema) {
       path: "target.id"
     });
   }
-  if (packet.requiredBaseline.total !== BASELINE_ITEMS_COUNT) {
-    issues.push({
-      severity: "error",
-      code: "PKT-004",
-      message: `requiredBaseline.total must be ${BASELINE_ITEMS_COUNT}, got ${packet.requiredBaseline.total}`,
-      path: "requiredBaseline.total"
-    });
+  const isBaselineExplicitlyDisabled = packet.baselinePolicy === false;
+  const expectedPaths = new Set(ALWAYS_PRESENT_ITEMS.map((item) => item.path));
+  if (isBaselineExplicitlyDisabled) {
+    if (packet.requiredBaseline.total !== 0) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `baselinePolicy=false requires requiredBaseline.total=0, got ${packet.requiredBaseline.total}`,
+        path: "requiredBaseline.total"
+      });
+    }
+    if (packet.requiredBaseline.items.length !== 0) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `baselinePolicy=false requires requiredBaseline.items=[], got ${packet.requiredBaseline.items.length} item(s)`,
+        path: "requiredBaseline.items"
+      });
+    }
+  } else {
+    if (packet.requiredBaseline.total !== BASELINE_ITEMS_COUNT) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `requiredBaseline.total must be ${BASELINE_ITEMS_COUNT}, got ${packet.requiredBaseline.total}`,
+        path: "requiredBaseline.total"
+      });
+    }
+    if (packet.requiredBaseline.items.length !== BASELINE_ITEMS_COUNT) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `requiredBaseline.items.length must be ${BASELINE_ITEMS_COUNT}, got ${packet.requiredBaseline.items.length}`,
+        path: "requiredBaseline.items"
+      });
+    }
+    const actualPaths = packet.requiredBaseline.items.map((item) => item.path);
+    const actualPathSet = new Set(actualPaths);
+    if (actualPathSet.size !== actualPaths.length) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `requiredBaseline.items contains duplicate paths (${actualPaths.length} items, ${actualPathSet.size} unique)`,
+        path: "requiredBaseline.items"
+      });
+    }
+    const missingPaths = [];
+    for (const ep of expectedPaths) {
+      if (!actualPathSet.has(ep)) missingPaths.push(ep);
+    }
+    if (missingPaths.length > 0) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `requiredBaseline.items missing expected path(s): ${missingPaths.join(", ")}`,
+        path: "requiredBaseline.items"
+      });
+    }
+    const extraPaths = [];
+    for (const ap of actualPathSet) {
+      if (!expectedPaths.has(ap)) extraPaths.push(ap);
+    }
+    if (extraPaths.length > 0) {
+      issues.push({
+        severity: "error",
+        code: "PKT-004",
+        message: `requiredBaseline.items contains unexpected path(s): ${extraPaths.join(", ")}`,
+        path: "requiredBaseline.items"
+      });
+    }
   }
   const constraints = packet.implementationBlueprintDraft.constraints;
   if (constraints.length !== BASELINE_CONSTRAINTS_COUNT) {
@@ -515,7 +579,10 @@ function assemblePacket(manifest, options) {
     missing: [...manifest.missing],
     missingDetails: manifest.missingDetails ? [...manifest.missingDetails] : void 0,
     implementationBlueprintDraft: blueprintDraft,
-    validationCommands
+    validationCommands,
+    // @feature ACA17
+    // @decision D-ACA-17
+    baselinePolicy: manifest.baselinePolicy
   };
   return packet;
 }
@@ -736,7 +803,9 @@ async function auditSingleTarget(target, graph, options) {
     const manifest = resolveArtifactContext(graph, {
       target: { type: target.type, id: target.id },
       mode: options.mode,
-      maxPerCategory: options.maxPerCategory
+      maxPerCategory: options.maxPerCategory,
+      universalBaseline: options.universalBaseline,
+      root: options.root
     });
     const packet = assemblePacket(manifest, {
       mode: options.mode,
@@ -873,6 +942,7 @@ async function discoverAndAuditPackets(root, options) {
     type: d.type,
     id: d.id
   }));
+  const effectiveBaseline = options.universalBaseline ?? config.context?.universal_baseline;
   return auditPackets(root, targets, {
     root,
     outDir: options.outDir,
@@ -882,7 +952,8 @@ async function discoverAndAuditPackets(root, options) {
     summaryOnly: options.summaryOnly,
     sampleTargets: options.sampleTargets,
     summaryDetail: options.summaryDetail,
-    schema: config
+    schema: config,
+    universalBaseline: effectiveBaseline
   }, graph);
 }
 
@@ -2597,12 +2668,35 @@ var VALID_DECISIONS = /* @__PURE__ */ new Set([
 var VALID_SEVERITIES = /* @__PURE__ */ new Set(["block", "warn", "info"]);
 var VALID_FINDING_STATUSES = /* @__PURE__ */ new Set(["open", "resolved", "accepted", "superseded"]);
 var VALID_EXECUTORS = /* @__PURE__ */ new Set(["script", "worker", "agent", "manual", "cli"]);
+var TOP_LEVEL_FIELDS = /* @__PURE__ */ new Set([
+  "schema_version",
+  "run_id",
+  "stage_id",
+  "attempt",
+  "status",
+  "decision",
+  "summary",
+  "outputs",
+  "warnings",
+  "blocking_reason",
+  "degradation",
+  "producer",
+  "acceptance",
+  "evidence",
+  "review",
+  "repair"
+]);
 function validateReviewResult(input) {
   const errors = [];
   if (!input || typeof input !== "object" || Array.isArray(input)) {
     return [{ path: "$", message: "Root must be a non-null object" }];
   }
   const obj = input;
+  for (const key of Object.keys(obj)) {
+    if (!TOP_LEVEL_FIELDS.has(key)) {
+      errors.push({ path: `$.${key}`, message: "Unknown top-level property" });
+    }
+  }
   if (obj.schema_version !== "1.0") {
     errors.push({ path: "$.schema_version", message: `Must be "1.0", got ${JSON.stringify(obj.schema_version)}` });
   }
@@ -2621,8 +2715,8 @@ function validateReviewResult(input) {
   if (obj.stage_id !== void 0 && typeof obj.stage_id !== "string") {
     errors.push({ path: "$.stage_id", message: "Must be a string if present" });
   }
-  if (obj.attempt !== void 0 && (!Number.isInteger(obj.attempt) || obj.attempt < 1)) {
-    errors.push({ path: "$.attempt", message: "Must be a positive integer if present" });
+  if (obj.attempt !== void 0 && (!Number.isInteger(obj.attempt) || obj.attempt < 1 || obj.attempt > 3)) {
+    errors.push({ path: "$.attempt", message: "Must be an integer from 1 through 3 if present" });
   }
   if (obj.outputs !== void 0) {
     checkStringArray(obj.outputs, "$.outputs", errors);
@@ -2633,20 +2727,14 @@ function validateReviewResult(input) {
   checkOptionalNullableString(obj.blocking_reason, "$.blocking_reason", errors);
   checkOptionalNullableString(obj.degradation, "$.degradation", errors);
   if (obj.producer !== void 0) {
-    if (!isPlainObject(obj.producer)) {
-      errors.push({ path: "$.producer", message: "Must be an object" });
-    } else {
-      const p = obj.producer;
-      if (typeof p.executor !== "string") {
-        errors.push({ path: "$.producer.executor", message: "Must be a string" });
-      } else if (!VALID_EXECUTORS.has(p.executor)) {
-        errors.push({ path: "$.producer.executor", message: `Must be one of ${[...VALID_EXECUTORS].join(", ")}; got ${JSON.stringify(p.executor)}` });
-      }
-      if (typeof p.name !== "string") {
-        errors.push({ path: "$.producer.name", message: "Must be a string" });
-      }
-      checkOptionalString(p.skill, "$.producer.skill", errors);
-    }
+    validateProducer(obj.producer, "$.producer", errors);
+  }
+  const successfulAcceptance = obj.status === "SUCCEEDED" && (obj.decision === "PASS" || obj.decision === "PASS_WITH_RESIDUAL_MINOR");
+  if (successfulAcceptance && obj.producer === void 0) {
+    errors.push({ path: "$.producer", message: "Successful acceptance requires producer identity" });
+  }
+  if (obj.acceptance !== void 0) {
+    validateAcceptance(obj.acceptance, obj.producer, "$.acceptance", errors);
   }
   if (obj.evidence !== void 0) {
     if (!Array.isArray(obj.evidence)) {
@@ -2672,6 +2760,17 @@ function validateReviewResult(input) {
   }
   if (obj.review !== void 0) {
     validateReviewData(obj.review, "$.review", errors);
+    if (obj.decision === "PASS" || obj.decision === "PASS_WITH_RESIDUAL_MINOR") {
+      const findings = isPlainObject(obj.review) && Array.isArray(obj.review.findings) ? obj.review.findings : [];
+      findings.forEach((finding, index) => {
+        if (isPlainObject(finding) && finding.severity === "block" && (finding.status === void 0 || finding.status === "open")) {
+          errors.push({
+            path: `$.review.findings[${index}]`,
+            message: `${obj.decision} cannot contain an open block finding`
+          });
+        }
+      });
+    }
   }
   if (obj.repair !== void 0) {
     if (!isPlainObject(obj.repair)) {
@@ -2706,6 +2805,47 @@ function checkStringArray(val, path, errors) {
 }
 function isPlainObject(val) {
   return typeof val === "object" && val !== null && !Array.isArray(val);
+}
+function validateProducer(val, path, errors) {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: "Must be an object" });
+    return;
+  }
+  if (typeof val.executor !== "string") {
+    errors.push({ path: `${path}.executor`, message: "Must be a string" });
+  } else if (!VALID_EXECUTORS.has(val.executor)) {
+    errors.push({ path: `${path}.executor`, message: `Must be one of ${[...VALID_EXECUTORS].join(", ")}; got ${JSON.stringify(val.executor)}` });
+  }
+  if (typeof val.name !== "string" || val.name.length === 0) {
+    errors.push({ path: `${path}.name`, message: "Must be a non-empty string" });
+  }
+  checkOptionalString(val.skill, `${path}.skill`, errors);
+}
+function producerIdentity(val) {
+  return JSON.stringify([val.executor, val.name]);
+}
+function validateAcceptance(val, resultProducer, path, errors) {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: "Must be an object" });
+    return;
+  }
+  validateProducer(val.reviewer, `${path}.reviewer`, errors);
+  if (!isPlainObject(val.source_result)) {
+    errors.push({ path: `${path}.source_result`, message: "Must be an object" });
+    return;
+  }
+  const source = val.source_result;
+  if (typeof source.run_id !== "string" || source.run_id.length === 0) {
+    errors.push({ path: `${path}.source_result.run_id`, message: "Must be a non-empty string" });
+  }
+  checkOptionalString(source.stage_id, `${path}.source_result.stage_id`, errors);
+  validateProducer(source.producer, `${path}.source_result.producer`, errors);
+  if (isPlainObject(val.reviewer) && isPlainObject(resultProducer) && producerIdentity(val.reviewer) !== producerIdentity(resultProducer)) {
+    errors.push({ path: `${path}.reviewer`, message: "Acceptance reviewer must match the result producer" });
+  }
+  if (isPlainObject(val.reviewer) && isPlainObject(source.producer) && producerIdentity(val.reviewer) === producerIdentity(source.producer)) {
+    errors.push({ path: `${path}.reviewer`, message: "Repair producer cannot accept its own result" });
+  }
 }
 function checkOptionalString(val, path, errors) {
   if (val !== void 0 && typeof val !== "string") {
@@ -2875,7 +3015,7 @@ var DEFAULT_SCHEMA = {
     scenario: { paths: ["artifacts/scenarios/**/*.md"], displayName: "\u573A\u666F\u5267\u672C", role: "scenario", layer: "scenario", aliases: ["scenarios", "scenario-script"] },
     design: { paths: ["artifacts/design/**/*.md"], displayName: "\u8BBE\u8BA1\u89C4\u683C", role: "design", layer: "design", aliases: ["design-spec", "design_docs"] },
     test: { paths: ["heimdall/packages/**/*.test.ts"], displayName: "\u4EE3\u7801\u6CE8\u91CA\u8FFD\u6EAF", role: "context", layer: "implementation", aliases: ["code-test", "code-trace", "unit-test"] },
-    e2e_test: { paths: ["artifacts/tests/e2e/*.md"], displayName: "E2E \u6D4B\u8BD5\u89C4\u683C", role: "e2e_test", layer: "verification", aliases: ["e2e-test", "e2e_tests"] },
+    e2e_test: { paths: ["artifacts/tests/e2e/*.md"], displayName: "E2E \u6D4B\u8BD5\u89C4\u683C", role: "e2e_test", layer: "verification", aliases: ["e2e-test", "e2e_tests", "tc"] },
     e2e_registry: { paths: ["artifacts/tests/e2e/e2e-test-registry.json"], displayName: "E2E \u6D4B\u8BD5\u6CE8\u518C\u8868", role: "context", layer: "verification", aliases: ["e2e-registry"] },
     "rule-golden-cases": { paths: ["artifacts/tests/rule-golden-cases.md"], displayName: "\u89C4\u5219\u9EC4\u91D1\u6D4B\u8BD5\u7528\u4F8B", role: "context", layer: "verification", aliases: ["rule_golden_cases"] },
     "test-strategy": { paths: ["artifacts/design/test-strategy.md"], displayName: "\u6D4B\u8BD5\u7B56\u7565", role: "context", layer: "verification", aliases: ["test_strategy"] },
@@ -2918,6 +3058,12 @@ async function loadConfig(root) {
       throw error;
     }
   }
+  const ub = parsed.context?.universal_baseline;
+  if (ub !== void 0 && typeof ub !== "boolean") {
+    throw new Error(
+      `Invalid context.universal_baseline: ${JSON.stringify(ub)}. Must be boolean (true or false).`
+    );
+  }
   return {
     ...DEFAULT_SCHEMA,
     ...parsed,
@@ -2930,7 +3076,7 @@ async function loadConfig(root) {
     idRanges: mergeRecord(DEFAULT_SCHEMA.idRanges, parsed.idRanges)
   };
 }
-function buildGraph(nodes, edges, diagnostics = []) {
+function buildGraph(nodes, edges, diagnostics = [], root) {
   const graphNodes = nodes.map((node) => ({ ...node, uid: toUid(node.type, node.code) }));
   graphNodes.sort(compareNode);
   edges.sort(compareEdge);
@@ -2947,6 +3093,7 @@ function buildGraph(nodes, edges, diagnostics = []) {
     nodes: graphNodes,
     edges: dedupedEdges,
     generatedAt: (/* @__PURE__ */ new Date(0)).toISOString(),
+    ...root ? { root } : {},
     diagnostics: diagnostics.sort((left, right) => left.code.localeCompare(right.code) || left.path.localeCompare(right.path) || left.line - right.line)
   };
 }
@@ -2978,7 +3125,8 @@ async function scanArtifacts(root, schema) {
       scanDiagnostics.push(...parsed.diagnostics);
     }
   }
-  const graph = buildGraph(nodes, edges, scanDiagnostics);
+  const absoluteRoot = isAbsolute3(root) ? root : resolve3(root);
+  const graph = buildGraph(nodes, edges, scanDiagnostics, absoluteRoot);
   return resolveMatrixEdges(graph);
 }
 function artifactTypeEntriesBySpecificity(schema) {
@@ -3318,23 +3466,34 @@ async function validateScenarioPrdLinkIndex(root, graph) {
 function validateCodeCommentTraceabilityFormat(graph) {
   const issues = [];
   for (const node of graph.nodes) {
-    if (node.type !== "test") {
+    if (node.type !== "test" && node.type !== "implementation") {
       continue;
     }
     const invalidComments = node.attrs?.invalidTraceabilityComments;
-    if (!Array.isArray(invalidComments)) {
-      continue;
+    if (Array.isArray(invalidComments)) {
+      for (const invalid of invalidComments) {
+        const line = typeof invalid?.line === "number" ? invalid.line : node.line;
+        const reason = typeof invalid?.reason === "string" ? invalid.reason : "traceability tags must use standalone // comments";
+        issues.push(issue(
+          "CODE_COMMENT_TRACEABILITY_FORMAT",
+          `${reason}: ${typeof invalid?.text === "string" ? invalid.text : ""}`.trim(),
+          node.path,
+          line,
+          { node: node.uid }
+        ));
+      }
     }
-    for (const invalid of invalidComments) {
-      const line = typeof invalid?.line === "number" ? invalid.line : node.line;
-      const reason = typeof invalid?.reason === "string" ? invalid.reason : "traceability tags must use standalone // comments";
-      issues.push(issue(
-        "CODE_COMMENT_TRACEABILITY_FORMAT",
-        `${reason}: ${typeof invalid?.text === "string" ? invalid.text : ""}`.trim(),
-        node.path,
-        line,
-        { node: node.uid }
-      ));
+    const deprecatedComments = node.attrs?.deprecatedTraceabilityComments;
+    if (Array.isArray(deprecatedComments)) {
+      for (const deprecated of deprecatedComments) {
+        issues.push(issue(
+          "E2E-TRACE-007",
+          "@tc is deprecated; use @e2e_test instead",
+          node.path,
+          typeof deprecated?.line === "number" ? deprecated.line : node.line,
+          { node: node.uid, severity: "warning" }
+        ));
+      }
     }
   }
   return issues;
@@ -3816,13 +3975,16 @@ function parseTest(path, raw, schema = DEFAULT_SCHEMA) {
   const isTest = isTestFile(path);
   const nodeType = isTest ? "test" : "implementation";
   const edgeKind = isTest ? "verifies" : "implements";
+  const attrs = {};
+  if (traceabilityComments.invalid.length > 0) attrs.invalidTraceabilityComments = traceabilityComments.invalid;
+  if (traceabilityComments.deprecated.length > 0) attrs.deprecatedTraceabilityComments = traceabilityComments.deprecated;
   const node = {
     type: nodeType,
     code: path,
     title: path.split("/").at(-1) ?? path,
     path,
     line: 1,
-    attrs: traceabilityComments.invalid.length > 0 ? { invalidTraceabilityComments: traceabilityComments.invalid } : {}
+    attrs
   };
   let hasTags = false;
   for (const { tags, lineNumber } of traceabilityComments.canonical) {
@@ -3833,7 +3995,7 @@ function parseTest(path, raw, schema = DEFAULT_SCHEMA) {
       }
     }
   }
-  if (hasTags || traceabilityComments.invalid.length > 0) {
+  if (hasTags || traceabilityComments.invalid.length > 0 || traceabilityComments.deprecated.length > 0) {
     nodes.push(node);
   }
   return { nodes, edges };
@@ -3841,6 +4003,7 @@ function parseTest(path, raw, schema = DEFAULT_SCHEMA) {
 function scanTraceabilityComments(raw, schema = DEFAULT_SCHEMA) {
   const canonical = [];
   const invalid = [];
+  const deprecated = [];
   for (const comment of scanCodeComments(raw)) {
     if (!containsTraceabilityTag(comment.text, schema)) {
       continue;
@@ -3856,6 +4019,9 @@ function scanTraceabilityComments(raw, schema = DEFAULT_SCHEMA) {
     const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
+      if (/(?:^|\s)@tc(?=\s|$)/.test(comment.text.trim())) {
+        deprecated.push({ line: comment.lineNumber, text: comment.text.trim() });
+      }
     } else {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: parsed.reason });
     }
@@ -3871,11 +4037,14 @@ function scanTraceabilityComments(raw, schema = DEFAULT_SCHEMA) {
     const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
+      if (/(?:^|\s)@tc(?=\s|$)/.test(comment.text.trim())) {
+        deprecated.push({ line: comment.lineNumber, text: comment.text.trim() });
+      }
     } else {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: parsed.reason });
     }
   }
-  return { canonical, invalid };
+  return { canonical, invalid, deprecated };
 }
 function scanCodeComments(raw) {
   const comments = [];
@@ -4042,7 +4211,14 @@ function expandCodeRange(value) {
   return Array.from({ length: end - start + 1 }, (_, index) => `${prefix}${String(start + index).padStart(width, "0")}`);
 }
 function containsTraceabilityTag(value, schema = DEFAULT_SCHEMA) {
-  return /@[\w][\w-]*\b/.test(value);
+  const tokens = /* @__PURE__ */ new Set();
+  for (const [type, definition] of Object.entries(schema.types)) {
+    tokens.add(type);
+    for (const alias of definition.aliases ?? []) tokens.add(alias);
+  }
+  if (tokens.size === 0) return false;
+  const alternatives = [...tokens].sort((a, b) => b.length - a.length).map((token) => token.replace(/[-\/\\^$*+?.()|[\]{}]/g, "\\$&")).join("|");
+  return new RegExp(`(?:^|\\s)@(?:${alternatives})(?=\\s|$)`).test(value);
 }
 function parseDesign(path, raw) {
   const parsed = matter(raw);
@@ -5159,8 +5335,8 @@ async function validateExecutableTraceability(root) {
     }
   }
   const refToSource = /* @__PURE__ */ new Map();
-  const tcAnnotationRegex = /\/\/!?\s*@tc\s+(\S+?)\s+\[(\w+)\]/;
-  const tcAnnotationNoLevelRegex = /\/\/!?\s*@tc\s+(\S+)/;
+  const tcAnnotationRegex = /\/\/!?\s*@(?:e2e_test|tc)\s+(\S+?)\s+\[(\w+)\]/;
+  const tcAnnotationNoLevelRegex = /\/\/!?\s*@(?:e2e_test|tc)\s+(\S+)/;
   for (const specFile of specFiles) {
     const fullSpecPath = join5(root, specFile);
     let content;
@@ -5249,7 +5425,7 @@ async function validateExecutableTraceability(root) {
         return normalizedAnnFile === normalizedRefFile;
       }) ?? false;
       if (!hasAnnotationInFile) {
-        issues.push(issue("E2E-TRACE-003", `executable_ref target ${entry.file} has no // @tc ${tcKey} line-comment annotation`, path, line, { node: tcKey, severity: "warning" }));
+        issues.push(issue("E2E-TRACE-003", `executable_ref target ${entry.file} has no E2E trace annotation ${tcKey}`, path, line, { node: tcKey, severity: "warning" }));
         continue;
       }
       validFiles.push(normalizedRefFile);
@@ -5260,13 +5436,13 @@ async function validateExecutableTraceability(root) {
     const batch = tcKey.split(":")[0];
     if (!mdBatches.has(batch)) {
       for (const ann of annotations) {
-        issues.push(issue("E2E-TRACE-002", `@tc annotation ${tcKey} references non-existent E2E batch "${batch}"`, ann.file, ann.line, { node: tcKey, severity: "warning" }));
+        issues.push(issue("E2E-TRACE-002", `E2E trace annotation ${tcKey} references non-existent E2E batch "${batch}"`, ann.file, ann.line, { node: tcKey, severity: "warning" }));
       }
       continue;
     }
     if (!mdToRef.has(tcKey) && !await hasMarkdownTc(tcKey, e2eDir)) {
       for (const ann of annotations) {
-        issues.push(issue("E2E-TRACE-002", `@tc annotation ${tcKey} references non-existent Markdown TC`, ann.file, ann.line, { node: tcKey, severity: "warning" }));
+        issues.push(issue("E2E-TRACE-002", `E2E trace annotation ${tcKey} references non-existent Markdown TC`, ann.file, ann.line, { node: tcKey, severity: "warning" }));
       }
     }
   }
@@ -5288,7 +5464,7 @@ async function validateExecutableTraceability(root) {
       const primaryRef = refEntries[0];
       const normalizedPrimary = primaryRef?.file.startsWith("heimdall/") ? primaryRef?.file : `heimdall/${primaryRef?.file ?? ""}`;
       const detail = `file: MD refs=[${refEntries.map((e) => e.file).join(", ")}] vs source=${ann.file}`;
-      issues.push(issue("E2E-TRACE-003", `executable_ref \u2194 @tc mismatch for ${tcKey}: ${detail}`, path, line, { node: tcKey, severity: "warning" }));
+      issues.push(issue("E2E-TRACE-003", `executable_ref \u2194 E2E trace annotation mismatch for ${tcKey}: ${detail}`, path, line, { node: tcKey, severity: "warning" }));
     }
   }
   for (const [tcKey, { chainType, path, line }] of mdToRef) {
@@ -5454,14 +5630,14 @@ async function validatePartialRustEvidence(tcFields, tcKey, root) {
       return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
     }
     const tcAnnotationPattern = new RegExp(
-      `//[/!]?\\s*@tc\\s+${escapeRegExp(tcKey)}\\s+\\[partial_rust\\]`
+      `//[/!]?\\s*@(?:e2e_test|tc)\\s+${escapeRegExp(tcKey)}\\s+\\[partial_rust\\]`
     );
     if (!tcAnnotationPattern.test(content)) {
-      const noLevelPattern = new RegExp(`//[/!]?\\s*@tc\\s+${escapeRegExp(tcKey)}\\b`);
+      const noLevelPattern = new RegExp(`//[/!]?\\s*@(?:e2e_test|tc)\\s+${escapeRegExp(tcKey)}\\b`);
       if (noLevelPattern.test(content)) {
-        return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has @tc ${tcKey} but not tagged [partial_rust]` };
+        return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has E2E trace annotation ${tcKey} but not tagged [partial_rust]` };
       }
-      return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has no @tc ${tcKey} annotation` };
+      return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has no E2E trace annotation ${tcKey}` };
     }
   }
   return { hasValidPartialRust: true, detail: "ok" };
@@ -5788,9 +5964,14 @@ function mergeRecord(base, override) {
 function mergeArtifactTypes(base, override) {
   const result = { ...base };
   for (const [type, definition] of Object.entries(override ?? {})) {
+    const aliases = [
+      ...base[type]?.aliases ?? [],
+      ...definition.aliases ?? []
+    ].filter((alias, index, all) => all.indexOf(alias) === index);
     result[type] = {
       ...base[type] ?? {},
-      ...definition
+      ...definition,
+      ...aliases.length > 0 ? { aliases } : {}
     };
   }
   return result;
@@ -5884,6 +6065,8 @@ var TIER_ORDER = ["baseline", "target", "direct", "matrix", "transitive"];
 function resolveArtifactContext(graph, opts) {
   const mode = opts.mode ?? "full";
   const maxPerCategory = opts.maxPerCategory ?? 20;
+  const universalBaseline = opts.universalBaseline ?? true;
+  const root = opts.root ?? graph.root;
   const legacyCount = [opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).length;
   if (opts.target && legacyCount > 0) {
     return {
@@ -6036,12 +6219,80 @@ function resolveArtifactContext(graph, opts) {
     return "direct";
   }
   const pathMap = /* @__PURE__ */ new Map();
-  for (const ap of ALWAYS_PRESENT_ITEMS) {
-    const existing = pathMap.get(ap.path);
-    if (existing) {
-      if (!existing.reasons.includes(ap.reason)) existing.reasons.push(ap.reason);
+  if (universalBaseline) {
+    for (const ap of ALWAYS_PRESENT_ITEMS) {
+      const existing = pathMap.get(ap.path);
+      if (existing) {
+        if (!existing.reasons.includes(ap.reason)) existing.reasons.push(ap.reason);
+      } else {
+        pathMap.set(ap.path, { path: ap.path, reasons: [ap.reason], category: "baseline", required: true, tier: "baseline" });
+      }
+    }
+    if (root) {
+      for (const ap of ALWAYS_PRESENT_ITEMS) {
+        const fullPath = join5(root, ap.path);
+        let stat;
+        try {
+          stat = statSync(fullPath);
+        } catch {
+          stat = null;
+        }
+        if (!stat) {
+          const msg = `Required baseline artifact not found: ${ap.path}`;
+          if (!missing.includes(msg)) {
+            missing.push(msg);
+            missingDetails.push({
+              ref: ap.path,
+              from: "baseline",
+              kind: "missing-baseline",
+              message: msg,
+              suggestedAction: `\u521B\u5EFA\u6587\u4EF6 ${ap.path} \u6216\u914D\u7F6E\u8DF3\u8FC7 universal baseline`
+            });
+          }
+        } else if (!stat.isFile()) {
+          const msg = `Required baseline artifact is not a regular file: ${ap.path}`;
+          if (!missing.includes(msg)) {
+            missing.push(msg);
+            missingDetails.push({
+              ref: ap.path,
+              from: "baseline",
+              kind: "missing-baseline",
+              message: msg,
+              suggestedAction: `\u5C06 ${ap.path} \u4ECE\u76EE\u5F55\u6539\u4E3A\u6587\u4EF6\uFF0C\u6216\u914D\u7F6E\u8DF3\u8FC7 universal baseline`
+            });
+          }
+        } else {
+          try {
+            accessSync(fullPath, fsConstants.R_OK);
+          } catch {
+            const msg = `Required baseline artifact is not readable: ${ap.path}`;
+            if (!missing.includes(msg)) {
+              missing.push(msg);
+              missingDetails.push({
+                ref: ap.path,
+                from: "baseline",
+                kind: "missing-baseline",
+                message: msg,
+                suggestedAction: `\u4FEE\u590D ${ap.path} \u7684\u6587\u4EF6\u6743\u9650\uFF0C\u6216\u914D\u7F6E\u8DF3\u8FC7 universal baseline`
+              });
+            }
+          }
+        }
+      }
     } else {
-      pathMap.set(ap.path, { path: ap.path, reasons: [ap.reason], category: "baseline", required: true, tier: "baseline" });
+      for (const ap of ALWAYS_PRESENT_ITEMS) {
+        const msg = `Cannot verify baseline without root: ${ap.path}`;
+        if (!missing.includes(msg)) {
+          missing.push(msg);
+          missingDetails.push({
+            ref: ap.path,
+            from: "baseline",
+            kind: "missing-baseline",
+            message: msg,
+            suggestedAction: `\u4F20\u9012 root \u53C2\u6570\u6216\u914D\u7F6E\u8DF3\u8FC7 universal baseline`
+          });
+        }
+      }
     }
   }
   pathMap.set(targetNode.path, {
@@ -6142,7 +6393,8 @@ function resolveArtifactContext(graph, opts) {
     context,
     missing,
     missingDetails,
-    omitted
+    omitted,
+    baselinePolicy: universalBaseline
   };
 }
 function formatContextMarkdown(manifest) {

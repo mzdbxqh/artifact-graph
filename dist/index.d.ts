@@ -165,6 +165,8 @@ interface ImplementationPacket {
     missingDetails?: MissingDetail[];
     implementationBlueprintDraft: ImplementationBlueprintDraft;
     validationCommands: string[];
+    /** Explicit universal baseline policy: true=enabled, false=disabled. Absent=legacy (pre-0.5) packet. */
+    baselinePolicy?: boolean;
 }
 /**
  * Assemble an implementation packet from a context manifest.
@@ -190,6 +192,10 @@ declare function renderPacketMarkdown(packet: ImplementationPacket): string;
  *
  * v1.12: accepts optional schema to derive valid target types dynamically.
  * Without schema, falls back to the static VALID_PACKET_TARGET_TYPES list.
+ *
+ * v0.5: PKT-004 no longer infers opt-out from missingDetails or total=0.
+ *       baselinePolicy=true|absent → must match ALWAYS_PRESENT_ITEMS exactly.
+ *       baselinePolicy=false       → must be total=0, items=[].
  */
 
 /** Valid target types for packets (legacy static fallback) */
@@ -302,6 +308,8 @@ interface AuditOptions {
     format?: 'json' | 'markdown';
     mode?: ContextMode;
     maxPerCategory?: number;
+    /** When true (default), check universal baseline files. When false, skip. */
+    universalBaseline?: boolean;
     /** Absolute path to the targets file (--targets-file mode only) */
     sourceTargetsPath?: string;
     /** If true, do not write individual packet files — only summary */
@@ -349,10 +357,14 @@ interface DiscoverAuditOptions {
     summaryDetail?: 'full' | 'compact';
     /** Artifact schema for dynamic target type validation */
     schema?: ArtifactSchema;
+    /** When true (default), check universal baseline files. When false, skip. */
+    universalBaseline?: boolean;
 }
 /**
  * Scan artifacts, discover targets, then audit packets for each.
  * Single scan is reused for both discovery and audit.
+ *
+ * When options.universalBaseline is undefined, falls back to config.context?.universal_baseline.
  */
 declare function discoverAndAuditPackets(root: string, options: DiscoverAuditOptions): Promise<PacketAuditSummary>;
 
@@ -654,7 +666,6 @@ declare function installManagedHookBlock(options: ManagedHookBlockOptions): Prom
 
 /**
  * Review Result Protocol validator.
- * @feature ACA16 @scenario S-46
  *
  * Validates a JSON object against the review-result.schema.json constraints.
  * Does NOT use ajv or any JSON-schema library — pure deterministic checks
@@ -715,6 +726,15 @@ interface Producer {
     name: string;
     skill?: string;
 }
+interface AcceptanceSourceResult {
+    run_id: string;
+    stage_id?: string;
+    producer: Producer;
+}
+interface AcceptanceData {
+    reviewer: Producer;
+    source_result: AcceptanceSourceResult;
+}
 interface BatchDefinition {
     id: string;
     files: string[];
@@ -767,6 +787,7 @@ interface ReviewResult {
     blocking_reason?: string | null;
     degradation?: string | null;
     producer?: Producer;
+    acceptance?: AcceptanceData;
     evidence?: Evidence[];
     review?: ReviewData;
     repair?: RepairData;
@@ -836,6 +857,11 @@ interface ArtifactSchema {
         start: number;
         end: number;
     }>>;
+    /** Context resolution overrides */
+    context?: {
+        /** When false, skip universal baseline injection. Default: true. */
+        universal_baseline?: boolean;
+    };
 }
 declare const TARGET_ARTIFACT_TYPES: readonly ["feature", "scenario", "decision", "design", "e2e_test"];
 type TargetArtifactType = typeof TARGET_ARTIFACT_TYPES[number];
@@ -862,6 +888,8 @@ interface ArtifactGraph {
     nodes: ArtifactNode[];
     edges: ArtifactEdge[];
     generatedAt: string;
+    /** Normalized absolute project root passed to scanArtifacts. Optional for backward compatibility. */
+    root?: string;
     /** Scan-time diagnostics. Optional for backward compatibility with consumers that build graph literals without this field. */
     diagnostics?: ValidationIssue[];
 }
@@ -881,7 +909,7 @@ interface ContextItem {
 interface MissingDetail {
     ref: string;
     from: string;
-    kind: 'unresolved-outgoing' | 'unresolved-incoming' | 'target-not-found' | 'multiple-targets';
+    kind: 'unresolved-outgoing' | 'unresolved-incoming' | 'target-not-found' | 'multiple-targets' | 'missing-baseline';
     message: string;
     suggestedAction: string;
 }
@@ -899,6 +927,8 @@ interface ContextManifest {
     missing: string[];
     missingDetails?: MissingDetail[];
     omitted?: ContextItem[];
+    /** Explicit universal baseline policy: true=enabled, false=disabled. Used by validatePacket to prevent inferring opt-out from total=0. */
+    baselinePolicy?: boolean;
 }
 type ContextMode = 'full' | 'implementation';
 interface ContextOptions {
@@ -911,10 +941,18 @@ interface ContextOptions {
     target?: ArtifactTarget;
     mode?: ContextMode;
     maxPerCategory?: number;
+    /**
+     * When true (default), inject all ALWAYS_PRESENT_ITEMS as required baseline
+     * and report missing ones in manifest.missing. When false, skip baseline
+     * injection entirely for lightweight projects.
+     */
+    universalBaseline?: boolean;
+    /** Project root for baseline file existence checks. Required when universalBaseline is true. */
+    root?: string;
 }
 declare const DEFAULT_SCHEMA: ArtifactSchema;
 declare function loadConfig(root: string): Promise<ArtifactSchema>;
-declare function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics?: ValidationIssue[]): ArtifactGraph;
+declare function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics?: ValidationIssue[], root?: string): ArtifactGraph;
 declare function scanArtifacts(root: string, schema?: ArtifactSchema): Promise<ArtifactGraph>;
 /**
  * Resolve traceability-matrix-v2 edges:

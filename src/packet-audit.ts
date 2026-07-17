@@ -85,6 +85,8 @@ interface AuditOptions {
   format?: 'json' | 'markdown';
   mode?: ContextMode;
   maxPerCategory?: number;
+  /** When true (default), check universal baseline files. When false, skip. */
+  universalBaseline?: boolean;
   /** Absolute path to the targets file (--targets-file mode only) */
   sourceTargetsPath?: string;
   /** If true, do not write individual packet files — only summary */
@@ -177,6 +179,8 @@ async function auditSingleTarget(
       target: { type: target.type, id: target.id },
       mode: options.mode,
       maxPerCategory: options.maxPerCategory,
+      universalBaseline: options.universalBaseline,
+      root: options.root,
     });
 
     const packet = assemblePacket(manifest, {
@@ -364,11 +368,17 @@ interface DiscoverAuditOptions {
   summaryDetail?: 'full' | 'compact';
   /** Artifact schema for dynamic target type validation */
   schema?: ArtifactSchema;
+  /** When true (default), check universal baseline files. When false, skip. */
+  universalBaseline?: boolean;
 }
 
+// @feature ACA17
+// @decision D-ACA-17
 /**
  * Scan artifacts, discover targets, then audit packets for each.
  * Single scan is reused for both discovery and audit.
+ *
+ * When options.universalBaseline is undefined, falls back to config.context?.universal_baseline.
  */
 export async function discoverAndAuditPackets(
   root: string,
@@ -381,6 +391,8 @@ export async function discoverAndAuditPackets(
     type: d.type,
     id: d.id,
   }));
+  // Fallback: options.universalBaseline ?? config.context?.universal_baseline
+  const effectiveBaseline = options.universalBaseline ?? config.context?.universal_baseline;
   return auditPackets(root, targets, {
     root,
     outDir: options.outDir,
@@ -391,5 +403,6 @@ export async function discoverAndAuditPackets(
     sampleTargets: options.sampleTargets,
     summaryDetail: options.summaryDetail,
     schema: config,
+    universalBaseline: effectiveBaseline,
   }, graph);
 }

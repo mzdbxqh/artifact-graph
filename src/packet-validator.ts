@@ -6,9 +6,13 @@
  *
  * v1.12: accepts optional schema to derive valid target types dynamically.
  * Without schema, falls back to the static VALID_PACKET_TARGET_TYPES list.
+ *
+ * v0.5: PKT-004 no longer infers opt-out from missingDetails or total=0.
+ *       baselinePolicy=true|absent → must match ALWAYS_PRESENT_ITEMS exactly.
+ *       baselinePolicy=false       → must be total=0, items=[].
  */
 import type { ImplementationPacket } from './packet-assembler.js';
-import { BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT } from './packet-constants.js';
+import { ALWAYS_PRESENT_ITEMS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT } from './packet-constants.js';
 
 /** Minimum required validation commands */
 const MIN_VALIDATION_COMMANDS = 4;
@@ -112,14 +116,90 @@ export function validatePacket(
     });
   }
 
-  // PKT-004: requiredBaseline.total === BASELINE_ITEMS_COUNT
-  if (packet.requiredBaseline.total !== BASELINE_ITEMS_COUNT) {
-    issues.push({
-      severity: 'error',
-      code: 'PKT-004',
-      message: `requiredBaseline.total must be ${BASELINE_ITEMS_COUNT}, got ${packet.requiredBaseline.total}`,
-      path: 'requiredBaseline.total',
-    });
+  // PKT-004: requiredBaseline integrity — strict policy enforcement.
+  //
+  // @feature ACA17
+  // @decision D-ACA-17
+  // No inference from missingDetails or total=0.
+  // baselinePolicy=true or absent → must match ALWAYS_PRESENT_ITEMS exactly (19 items, 19 unique paths).
+  // baselinePolicy=false           → must be total=0 and items=[] (explicit opt-out).
+  const isBaselineExplicitlyDisabled = packet.baselinePolicy === false;
+  const expectedPaths = new Set(ALWAYS_PRESENT_ITEMS.map((item) => item.path));
+
+  if (isBaselineExplicitlyDisabled) {
+    // Explicit opt-out: total must be 0, items must be empty
+    if (packet.requiredBaseline.total !== 0) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `baselinePolicy=false requires requiredBaseline.total=0, got ${packet.requiredBaseline.total}`,
+        path: 'requiredBaseline.total',
+      });
+    }
+    if (packet.requiredBaseline.items.length !== 0) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `baselinePolicy=false requires requiredBaseline.items=[], got ${packet.requiredBaseline.items.length} item(s)`,
+        path: 'requiredBaseline.items',
+      });
+    }
+  } else {
+    // Default (true or absent): must match ALWAYS_PRESENT_ITEMS exactly
+    if (packet.requiredBaseline.total !== BASELINE_ITEMS_COUNT) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `requiredBaseline.total must be ${BASELINE_ITEMS_COUNT}, got ${packet.requiredBaseline.total}`,
+        path: 'requiredBaseline.total',
+      });
+    }
+    if (packet.requiredBaseline.items.length !== BASELINE_ITEMS_COUNT) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `requiredBaseline.items.length must be ${BASELINE_ITEMS_COUNT}, got ${packet.requiredBaseline.items.length}`,
+        path: 'requiredBaseline.items',
+      });
+    }
+    // Verify each item path matches expected ALWAYS_PRESENT_ITEMS
+    const actualPaths = packet.requiredBaseline.items.map((item) => item.path);
+    const actualPathSet = new Set(actualPaths);
+    // Check for duplicates
+    if (actualPathSet.size !== actualPaths.length) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `requiredBaseline.items contains duplicate paths (${actualPaths.length} items, ${actualPathSet.size} unique)`,
+        path: 'requiredBaseline.items',
+      });
+    }
+    // Check for missing expected paths
+    const missingPaths: string[] = [];
+    for (const ep of expectedPaths) {
+      if (!actualPathSet.has(ep)) missingPaths.push(ep);
+    }
+    if (missingPaths.length > 0) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `requiredBaseline.items missing expected path(s): ${missingPaths.join(', ')}`,
+        path: 'requiredBaseline.items',
+      });
+    }
+    // Check for unexpected extra paths
+    const extraPaths: string[] = [];
+    for (const ap of actualPathSet) {
+      if (!expectedPaths.has(ap)) extraPaths.push(ap);
+    }
+    if (extraPaths.length > 0) {
+      issues.push({
+        severity: 'error',
+        code: 'PKT-004',
+        message: `requiredBaseline.items contains unexpected path(s): ${extraPaths.join(', ')}`,
+        path: 'requiredBaseline.items',
+      });
+    }
   }
 
   // PKT-005: constraints count and C-RULE-01 presence

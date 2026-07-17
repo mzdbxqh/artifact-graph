@@ -18,7 +18,24 @@ artifact_graph() {
   return 127
 }
 
-artifact_graph version-lock refresh --changed-only --staged --format markdown || exit $?
+# Detect if config or spec boundary files are staged
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR 2>/dev/null || true)
+config_staged=0
+for f in $staged_files; do
+  case "$f" in
+    artifact-graph.config.yaml|*/artifact-graph.config.yaml)
+      config_staged=1
+      break
+      ;;
+  esac
+done
+
+if [ "$config_staged" -eq 1 ]; then
+  artifact_graph version-lock refresh --all --format markdown || exit $?
+else
+  artifact_graph version-lock refresh --changed-only --staged --format markdown || exit $?
+fi
+
 if ! git diff --quiet -- artifacts/traceability-version-lock.json; then
   echo "artifact-chain-assistant: version lock changed during pre-commit." >&2
   echo "Please review and stage artifacts/traceability-version-lock.json, then commit again." >&2

@@ -9,6 +9,7 @@ describe('validateReviewResult', () => {
     status: 'SUCCEEDED',
     decision: 'PASS',
     summary: 'All checks passed.',
+    producer: { executor: 'worker', name: 'independent-reviewer', skill: 'artifact-review' },
   };
 
   it('accepts a minimal valid result', () => {
@@ -25,6 +26,14 @@ describe('validateReviewResult', () => {
       blocking_reason: null,
       degradation: null,
       producer: { executor: 'worker', name: 'prd-review-worker', skill: 'artifact-review-prd' },
+      acceptance: {
+        reviewer: { executor: 'worker', name: 'prd-review-worker', skill: 'artifact-review-prd' },
+        source_result: {
+          run_id: 'repair-run-001',
+          stage_id: 'repair-prd/batch-01',
+          producer: { executor: 'worker', name: 'prd-repair-worker', skill: 'artifact-repair-prd' },
+        },
+      },
       evidence: [
         'runs/test/summary.md',
         { type: 'deterministic-result', path: 'runs/test/result.json', status: 'SUCCEEDED', decision: 'PASS' },
@@ -91,6 +100,83 @@ describe('validateReviewResult', () => {
   it('rejects attempt < 1', () => {
     const errors = validateReviewResult({ ...validMinimal, attempt: 0 });
     expect(errors).toContainEqual(expect.objectContaining({ path: '$.attempt' }));
+  });
+
+  it('rejects attempt > 3', () => {
+    const errors = validateReviewResult({ ...validMinimal, attempt: 4 });
+    expect(errors).toContainEqual(expect.objectContaining({ path: '$.attempt' }));
+  });
+
+  it.each(['verdict', 'findings', 'repair_entry'])('rejects unknown legacy top-level field %s', (field) => {
+    const errors = validateReviewResult({ ...validMinimal, [field]: [] });
+    expect(errors).toContainEqual(expect.objectContaining({ path: `$.${field}` }));
+  });
+
+  it.each(['PASS', 'PASS_WITH_RESIDUAL_MINOR'])('%s rejects an open block finding', (decision) => {
+    const errors = validateReviewResult({
+      ...validMinimal,
+      decision,
+      review: { findings: [{ id: 'F-BLOCK', severity: 'block', message: 'still open', status: 'open' }] },
+    });
+    expect(errors).toContainEqual(expect.objectContaining({ path: '$.review.findings[0]' }));
+  });
+
+  it.each(['error', 'warning'])('rejects non-protocol severity %s', (severity) => {
+    const errors = validateReviewResult({
+      ...validMinimal,
+      review: { findings: [{ id: 'F-1', severity, message: 'invalid vocabulary' }] },
+    });
+    expect(errors).toContainEqual(expect.objectContaining({ path: '$.review.findings[0].severity' }));
+  });
+
+  it.each(['PASS', 'PASS_WITH_RESIDUAL_MINOR'])('%s requires producer identity on successful acceptance', (decision) => {
+    const { producer, ...withoutProducer } = validMinimal;
+    const errors = validateReviewResult({ ...withoutProducer, decision });
+    expect(errors).toContainEqual(expect.objectContaining({ path: '$.producer' }));
+  });
+
+  it('accepts independent re-review identity linked to a repair result', () => {
+    const result: ReviewResult = {
+      ...validMinimal,
+      attempt: 2,
+      producer: { executor: 'worker', name: 'review-worker', skill: 'artifact-review' },
+      acceptance: {
+        reviewer: { executor: 'worker', name: 'review-worker', skill: 'artifact-review' },
+        source_result: {
+          run_id: 'repair-run-1',
+          stage_id: 'repair-1',
+          producer: { executor: 'worker', name: 'repair-worker', skill: 'artifact-repair' },
+        },
+      },
+    };
+    expect(validateReviewResult(result)).toEqual([]);
+  });
+
+  it('rejects a repair producer accepting its own repair', () => {
+    const identity = { executor: 'worker' as const, name: 'repair-worker', skill: 'artifact-repair' };
+    const errors = validateReviewResult({
+      ...validMinimal,
+      producer: identity,
+      acceptance: {
+        reviewer: identity,
+        source_result: { run_id: 'repair-run-1', producer: identity },
+      },
+    });
+    expect(errors).toContainEqual(expect.objectContaining({ path: '$.acceptance.reviewer' }));
+  });
+
+  it('rejects acceptance reviewer identity that differs from the result producer', () => {
+    const errors = validateReviewResult({
+      ...validMinimal,
+      acceptance: {
+        reviewer: { executor: 'worker', name: 'different-reviewer', skill: 'artifact-review' },
+        source_result: {
+          run_id: 'repair-run-1',
+          producer: { executor: 'worker', name: 'repair-worker', skill: 'artifact-repair' },
+        },
+      },
+    });
+    expect(errors).toContainEqual(expect.objectContaining({ path: '$.acceptance.reviewer' }));
   });
 
   it('rejects invalid finding severity', () => {

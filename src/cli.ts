@@ -67,7 +67,10 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
   const root = String(parsed.flags.root ?? cwd);
 
   try {
-    if (parsed.command === '--help' || parsed.command === '-h' || parsed.command === 'help') {
+    // Unified help interception: check for --help/-h before any command side effects
+    const hasHelpFlag = parsed.flags.help === true
+      || parsed.positional.some((p) => p === '--help' || p === '-h');
+    if (parsed.command === '--help' || parsed.command === '-h' || parsed.command === 'help' || hasHelpFlag) {
       out(helpText());
       return 0;
     }
@@ -171,6 +174,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           target: resolvedTarget,
           mode: contextMode,
           maxPerCategory,
+          universalBaseline: config.context?.universal_baseline,
+          root,
         });
         if (parsed.flags.format === 'json') {
           out(`${JSON.stringify(manifest, null, 2)}\n`);
@@ -208,6 +213,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           target: resolvedTarget,
           mode: packetMode,
           maxPerCategory: packetMaxPerCategory,
+          universalBaseline: config.context?.universal_baseline,
+          root,
         });
         if (manifest.missing.length > 0) {
           err('Missing artifacts detected — cannot generate packet:\n');
@@ -348,6 +355,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           const promptManifest = resolveArtifactContext(graph, {
             target: resolvedTarget,
             mode: 'implementation',
+            universalBaseline: config.context?.universal_baseline,
+            root,
           });
           if (promptManifest.missing.length > 0) {
             err('Missing artifacts detected — cannot generate prompt:\n');
@@ -478,6 +487,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
 
         let summary;
         if (discover) {
+          const discoverConfig = await loadConfig(root);
           summary = await discoverAndAuditPackets(root, {
             root,
             outDir: auditOutDir,
@@ -488,6 +498,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             summaryOnly,
             sampleTargets,
             summaryDetail,
+            universalBaseline: discoverConfig.context?.universal_baseline,
           });
         } else {
           const targetsContent = await readFile(targetsFile!, 'utf-8');
@@ -514,6 +525,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             sampleTargets,
             summaryDetail,
             schema: auditConfig2,
+            universalBaseline: auditConfig2.context?.universal_baseline,
           });
         }
         if (parsed.flags.format === 'json') {
@@ -589,6 +601,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         let ppaSummary;
         if (ppaDiscover) {
           // Discover mode: scan artifacts, discover targets, audit prompts
+          const ppaDiscoverConfig = await loadConfig(root);
           ppaSummary = await discoverAndAuditPromptBatch(root, {
             root,
             outDir: ppaOutDir,
@@ -597,6 +610,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             limit: ppaLimit === 0 ? Infinity : ppaLimit,
             summaryOnly: ppaSummaryOnly,
             summaryDetail: ppaSummaryDetail,
+            universalBaseline: ppaDiscoverConfig.context?.universal_baseline,
           });
           // discover 模式 total=0 说明 root 缺少 artifact 配置或制品，视为失败
           if (ppaSummary.total === 0) {
@@ -638,6 +652,7 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             sourceTargetsPath: ppaTargetsFile,
             summaryOnly: ppaSummaryOnly,
             summaryDetail: ppaSummaryDetail,
+            universalBaseline: ppaConfig.context?.universal_baseline,
           });
         }
 
@@ -738,6 +753,10 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
           if (!refreshAll && !refreshChangedOnly) {
             err('Usage: artifact-graph version-lock refresh (--all | --changed-only (--staged | --worktree | --base <ref>)) [--remove-orphans] [--format json|markdown] [--lock-path <path>]\n');
             return 1;
+          }
+          if (parsed.flags.help === true) {
+            out('Usage: artifact-graph version-lock refresh (--all | --changed-only (--staged | --worktree | --base <ref>)) [--remove-orphans] [--format json|markdown] [--lock-path <path>]\n');
+            return 0;
           }
           if (refreshAll && refreshChangedOnly) {
             err('Error: --all and --changed-only are mutually exclusive\n');
@@ -941,12 +960,22 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (token.startsWith('--')) {
       const key = token.slice(2);
       const next = rest[index + 1];
-      if (next && !next.startsWith('--')) {
+      // A value starting with '-' followed by a letter is a flag, not a value for this flag.
+      // A value starting with '-' followed by a digit (e.g. -1) is a negative number and IS a value.
+      const nextLooksLikeFlag = next && next.startsWith('-') && next.length > 1 && !/\d/.test(next[1]);
+      if (next && !nextLooksLikeFlag) {
         flags[key] = next;
         index += 1;
       } else {
         flags[key] = true;
       }
+    } else if (token === '-h') {
+      // Handle -h as help flag
+      flags.help = true;
+    } else if (token.startsWith('-') && token.length > 1) {
+      // Handle other short flags
+      const key = token.slice(1);
+      flags[key] = true;
     } else {
       positional.push(token);
     }

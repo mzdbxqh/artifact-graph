@@ -739,6 +739,10 @@ describe('artifact chain toolkit support', () => {
     expect(template).toContain('|| exit $?');
     expect(template).toContain('git diff --quiet -- artifacts/traceability-version-lock.json');
     expect(template).toContain('stage artifacts/traceability-version-lock.json');
+    expect(template).toContain('artifact-graph.config.yaml');
+    expect(template).toContain('config_staged');
+    expect(template).toContain('version-lock refresh --all --format markdown');
+    expect(template).toContain('git diff --cached --name-only');
   });
 
   it('pre-commit template propagates refresh failures before diff checks', async () => {
@@ -793,6 +797,111 @@ describe('artifact chain toolkit support', () => {
       'validate --warning-only',
       'version-lock audit --strict-missing-lock',
     ]);
+  });
+
+  it('switches pre-commit to --all mode when artifact-graph.config.yaml is staged', async () => {
+    const root = await initGitRoot('config-staged-all');
+    const log = join(root, 'hook.log');
+    await write(root, 'node_modules/.bin/artifact-graph', [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "$HOOK_LOG"',
+      'if [ "${HOOK_TEST_FAIL:-}" = "refresh" ]; then exit 11; fi',
+      'lock="artifacts/traceability-version-lock.json"',
+      'if [ "${HOOK_TEST_WRITE_LOCK:-0}" = "1" ]; then printf "refreshed\\n" > "$lock"; fi',
+      'exit 0',
+      '',
+    ].join('\n'));
+    await chmod(join(root, 'node_modules/.bin/artifact-graph'), 0o755);
+    await write(root, 'artifacts/traceability-version-lock.json', 'initial\n');
+    await git(root, ['add', 'artifacts/traceability-version-lock.json']);
+    await git(root, ['-c', 'user.name=Hook Test', '-c', 'user.email=hook@example.invalid', 'commit', '--quiet', '-m', 'lock']);
+
+    const install = await capture(['hooks', 'install-git', '--root', root, '--hook', 'pre-commit'], root);
+    expect(install.code).toBe(0);
+
+    await write(root, 'artifact-graph.config.yaml', 'types: {}\n');
+    await git(root, ['add', 'artifact-graph.config.yaml']);
+    await writeFile(log, '');
+
+    const commit = await commandResult('git', [
+      '-C', root,
+      '-c', 'user.name=Hook Test',
+      '-c', 'user.email=hook@example.invalid',
+      'commit', '--quiet', '-m', 'config change',
+    ], root, { ...process.env, HOOK_LOG: log });
+
+    expect(commit.code).toBe(0);
+    expect((await readFile(log, 'utf8')).trim()).toBe('version-lock refresh --all --format markdown');
+  });
+
+  it('fails pre-commit when config staged and lock drifts during refresh', async () => {
+    const root = await initGitRoot('config-staged-drift');
+    const log = join(root, 'hook.log');
+    await write(root, 'node_modules/.bin/artifact-graph', [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "$HOOK_LOG"',
+      'if [ "${HOOK_TEST_FAIL:-}" = "refresh" ]; then exit 11; fi',
+      'lock="artifacts/traceability-version-lock.json"',
+      'if [ "${HOOK_TEST_WRITE_LOCK:-0}" = "1" ]; then printf "refreshed\\n" > "$lock"; fi',
+      'exit 0',
+      '',
+    ].join('\n'));
+    await chmod(join(root, 'node_modules/.bin/artifact-graph'), 0o755);
+    await write(root, 'artifacts/traceability-version-lock.json', 'initial\n');
+    await git(root, ['add', 'artifacts/traceability-version-lock.json']);
+    await git(root, ['-c', 'user.name=Hook Test', '-c', 'user.email=hook@example.invalid', 'commit', '--quiet', '-m', 'lock']);
+
+    const install = await capture(['hooks', 'install-git', '--root', root, '--hook', 'pre-commit'], root);
+    expect(install.code).toBe(0);
+
+    await write(root, 'artifact-graph.config.yaml', 'types: {}\n');
+    await git(root, ['add', 'artifact-graph.config.yaml']);
+    await writeFile(log, '');
+
+    const commit = await commandResult('git', [
+      '-C', root,
+      '-c', 'user.name=Hook Test',
+      '-c', 'user.email=hook@example.invalid',
+      'commit', '--quiet', '-m', 'config with drift',
+    ], root, { ...process.env, HOOK_LOG: log, HOOK_TEST_WRITE_LOCK: '1' });
+
+    expect(commit.code).not.toBe(0);
+    expect((await readFile(log, 'utf8')).trim()).toBe('version-lock refresh --all --format markdown');
+  });
+
+  it('propagates refresh exit code when config staged and refresh fails', async () => {
+    const root = await initGitRoot('config-staged-refresh-fail');
+    const log = join(root, 'hook.log');
+    await write(root, 'node_modules/.bin/artifact-graph', [
+      '#!/bin/sh',
+      'printf "%s\\n" "$*" >> "$HOOK_LOG"',
+      'if [ "${HOOK_TEST_FAIL:-}" = "refresh" ]; then exit 11; fi',
+      'lock="artifacts/traceability-version-lock.json"',
+      'if [ "${HOOK_TEST_WRITE_LOCK:-0}" = "1" ]; then printf "refreshed\\n" > "$lock"; fi',
+      'exit 0',
+      '',
+    ].join('\n'));
+    await chmod(join(root, 'node_modules/.bin/artifact-graph'), 0o755);
+    await write(root, 'artifacts/traceability-version-lock.json', 'initial\n');
+    await git(root, ['add', 'artifacts/traceability-version-lock.json']);
+    await git(root, ['-c', 'user.name=Hook Test', '-c', 'user.email=hook@example.invalid', 'commit', '--quiet', '-m', 'lock']);
+
+    const install = await capture(['hooks', 'install-git', '--root', root, '--hook', 'pre-commit'], root);
+    expect(install.code).toBe(0);
+
+    await write(root, 'artifact-graph.config.yaml', 'types: {}\n');
+    await git(root, ['add', 'artifact-graph.config.yaml']);
+    await writeFile(log, '');
+
+    const commit = await commandResult('git', [
+      '-C', root,
+      '-c', 'user.name=Hook Test',
+      '-c', 'user.email=hook@example.invalid',
+      'commit', '--quiet', '-m', 'config refresh fail',
+    ], root, { ...process.env, HOOK_LOG: log, HOOK_TEST_FAIL: 'refresh' });
+
+    expect(commit.code).not.toBe(0);
+    expect((await readFile(log, 'utf8')).trim()).toBe('version-lock refresh --all --format markdown');
   });
 
   it('checks and repairs generated hook templates with exact bytes and mode', async () => {

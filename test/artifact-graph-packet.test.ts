@@ -1,3 +1,5 @@
+// @feature ACA17
+// @scenario S-64
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -1127,7 +1129,7 @@ describe('validatePacket', () => {
     packet.requiredBaseline = { ...packet.requiredBaseline, total: 5 };
     const result = validatePacket(packet);
     expect(result.ok).toBe(false);
-    const issue = result.issues.find((i) => i.code === 'PKT-004');
+    const issue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('requiredBaseline.total must be'));
     expect(issue).toBeDefined();
     expect(issue!.severity).toBe('error');
     expect(issue!.message).toContain(String(BASELINE_ITEMS_COUNT));
@@ -1317,6 +1319,139 @@ describe('validatePacket', () => {
     const result = validatePacket(packet);
     expect(result.ok).toBe(false);
     expect(result.issues.every((i) => i.severity === 'error')).toBe(true);
+  });
+
+  // ── Baseline policy tests ──
+
+  it('accepts packet with total=0 missing=[] when baselinePolicy=false (explicit opt-out)', () => {
+    const packet = validPacket();
+    packet.requiredBaseline = { category: 'baseline', total: 0, items: [] };
+    packet.baselinePolicy = false;
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(true);
+    expect(result.issues.filter((i) => i.code === 'PKT-004')).toHaveLength(0);
+  });
+
+  it('rejects packet with total=0 missing=[] but no explicit baselinePolicy (cannot infer opt-out)', () => {
+    const packet = validPacket();
+    packet.requiredBaseline = { category: 'baseline', total: 0, items: [] };
+    // No baselinePolicy field — must fail PKT-004
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    expect(result.issues.some((i) => i.code === 'PKT-004')).toBe(true);
+  });
+
+  it('rejects packet with total=0 missing=[] and baselinePolicy=true (enabled but empty)', () => {
+    const packet = validPacket();
+    packet.requiredBaseline = { category: 'baseline', total: 0, items: [] };
+    packet.baselinePolicy = true;
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    expect(result.issues.some((i) => i.code === 'PKT-004')).toBe(true);
+  });
+
+  // PKT-004 negative: forged missingDetails must NOT skip PKT-004
+  it('PKT-004: forged missingDetails with kind=missing-baseline does NOT skip validation', () => {
+    const packet = validPacket();
+    packet.requiredBaseline = { category: 'baseline', total: 0, items: [] };
+    packet.missingDetails = [{
+      ref: 'AGENTS.md',
+      from: 'test',
+      kind: 'missing-baseline',
+      message: 'forged missing-baseline entry',
+      suggestedAction: 'add file',
+    }];
+    // No baselinePolicy field — must fail PKT-004 regardless of missingDetails
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    expect(result.issues.some((i) => i.code === 'PKT-004')).toBe(true);
+  });
+
+  // PKT-004 negative: total=19 but items=[] (mismatch)
+  it('PKT-004: total=19 but items=[] produces error for items.length', () => {
+    const packet = validPacket();
+    packet.requiredBaseline = { category: 'baseline', total: BASELINE_ITEMS_COUNT, items: [] };
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    const issue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('items.length'));
+    expect(issue).toBeDefined();
+    expect(issue!.severity).toBe('error');
+  });
+
+  // PKT-004 negative: baselinePolicy=false with non-empty items
+  it('PKT-004: baselinePolicy=false with non-empty items produces error', () => {
+    const packet = validPacket();
+    packet.requiredBaseline = {
+      category: 'baseline',
+      total: 5,
+      items: [
+        { path: 'AGENTS.md', reason: 'test', required: true },
+        { path: 'CLAUDE.md', reason: 'test', required: true },
+        { path: 'artifacts/artifact-chain-spec.md', reason: 'test', required: true },
+        { path: 'artifacts/blueprints/generation-packet-spec.md', reason: 'test', required: true },
+        { path: 'artifacts/blueprints/implementation-blueprint.md', reason: 'test', required: true },
+      ],
+    };
+    packet.baselinePolicy = false;
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    const totalIssue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('total=0'));
+    expect(totalIssue).toBeDefined();
+    const itemsIssue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('items=[]'));
+    expect(itemsIssue).toBeDefined();
+  });
+
+  // PKT-004 negative: duplicate paths in items
+  it('PKT-004: duplicate paths in requiredBaseline.items produces error', () => {
+    const packet = validPacket();
+    // Duplicate AGENTS.md by replacing the last item
+    const dupedItems = [...ALWAYS_PRESENT.map((ap) => ({
+      path: ap.path,
+      reason: ap.reason,
+      required: true,
+    }))];
+    dupedItems[dupedItems.length - 1] = { ...dupedItems[0] }; // duplicate AGENTS.md
+    packet.requiredBaseline = { category: 'baseline', total: BASELINE_ITEMS_COUNT, items: dupedItems };
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    const issue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('duplicate'));
+    expect(issue).toBeDefined();
+  });
+
+  // PKT-004 negative: wrong/extra path in items
+  it('PKT-004: unexpected extra path in requiredBaseline.items produces error', () => {
+    const packet = validPacket();
+    const extraItems = ALWAYS_PRESENT.map((ap) => ({
+      path: ap.path,
+      reason: ap.reason,
+      required: true,
+    }));
+    // Replace last item with a bogus path
+    extraItems[extraItems.length - 1] = { path: 'artifacts/bogus/FAKE.md', reason: 'fake', required: true };
+    packet.requiredBaseline = { category: 'baseline', total: BASELINE_ITEMS_COUNT, items: extraItems };
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(false);
+    const extraIssue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('unexpected'));
+    expect(extraIssue).toBeDefined();
+    const missingIssue = result.issues.find((i) => i.code === 'PKT-004' && i.message.includes('missing expected'));
+    expect(missingIssue).toBeDefined();
+  });
+
+  // PKT-004 positive: valid packet passes with correct 19 items
+  it('PKT-004: valid packet with correct 19 baseline items and matching paths passes', () => {
+    const packet = validPacket();
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(true);
+    expect(result.issues.filter((i) => i.code === 'PKT-004')).toHaveLength(0);
+  });
+
+  // PKT-004 positive: explicit baselinePolicy=true also passes with correct items
+  it('PKT-004: explicit baselinePolicy=true with correct 19 items passes', () => {
+    const packet = validPacket();
+    packet.baselinePolicy = true;
+    const result = validatePacket(packet);
+    expect(result.ok).toBe(true);
+    expect(result.issues.filter((i) => i.code === 'PKT-004')).toHaveLength(0);
   });
 });
 

@@ -56,6 +56,17 @@ export interface Producer {
   skill?: string;
 }
 
+export interface AcceptanceSourceResult {
+  run_id: string;
+  stage_id?: string;
+  producer: Producer;
+}
+
+export interface AcceptanceData {
+  reviewer: Producer;
+  source_result: AcceptanceSourceResult;
+}
+
 // ── Review Data ──────────────────────────────────────────────────────────────
 
 export interface BatchDefinition {
@@ -119,6 +130,7 @@ export interface ReviewResult {
   blocking_reason?: string | null;
   degradation?: string | null;
   producer?: Producer;
+  acceptance?: AcceptanceData;
   evidence?: Evidence[];
   review?: ReviewData;
   repair?: RepairData;

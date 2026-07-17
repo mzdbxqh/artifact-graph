@@ -1,6 +1,6 @@
+// @feature ACA16 @scenario S-46
 /**
  * Review Result Protocol validator.
- * @feature ACA16 @scenario S-46
  *
  * Validates a JSON object against the review-result.schema.json constraints.
  * Does NOT use ajv or any JSON-schema library — pure deterministic checks
@@ -20,6 +20,11 @@ const VALID_DECISIONS: ReadonlySet<string> = new Set<ReviewDecision>([
 const VALID_SEVERITIES: ReadonlySet<string> = new Set<FindingSeverity>(['block', 'warn', 'info']);
 const VALID_FINDING_STATUSES: ReadonlySet<string> = new Set<FindingStatus>(['open', 'resolved', 'accepted', 'superseded']);
 const VALID_EXECUTORS: ReadonlySet<string> = new Set<string>(['script', 'worker', 'agent', 'manual', 'cli']);
+const TOP_LEVEL_FIELDS = new Set([
+  'schema_version', 'run_id', 'stage_id', 'attempt', 'status', 'decision', 'summary',
+  'outputs', 'warnings', 'blocking_reason', 'degradation', 'producer', 'acceptance',
+  'evidence', 'review', 'repair',
+]);
 
 export interface ValidationError {
   path: string;
@@ -39,6 +44,12 @@ export function validateReviewResult(input: unknown): ValidationError[] {
   }
 
   const obj = input as Record<string, unknown>;
+
+  for (const key of Object.keys(obj)) {
+    if (!TOP_LEVEL_FIELDS.has(key)) {
+      errors.push({ path: `$.${key}`, message: 'Unknown top-level property' });
+    }
+  }
 
   // ── Required fields ──────────────────────────────────────────────────────
 
@@ -68,8 +79,8 @@ export function validateReviewResult(input: unknown): ValidationError[] {
     errors.push({ path: '$.stage_id', message: 'Must be a string if present' });
   }
 
-  if (obj.attempt !== undefined && (!Number.isInteger(obj.attempt) || (obj.attempt as number) < 1)) {
-    errors.push({ path: '$.attempt', message: 'Must be a positive integer if present' });
+  if (obj.attempt !== undefined && (!Number.isInteger(obj.attempt) || (obj.attempt as number) < 1 || (obj.attempt as number) > 3)) {
+    errors.push({ path: '$.attempt', message: 'Must be an integer from 1 through 3 if present' });
   }
 
   if (obj.outputs !== undefined) {
@@ -86,20 +97,17 @@ export function validateReviewResult(input: unknown): ValidationError[] {
   // ── Producer ─────────────────────────────────────────────────────────────
 
   if (obj.producer !== undefined) {
-    if (!isPlainObject(obj.producer)) {
-      errors.push({ path: '$.producer', message: 'Must be an object' });
-    } else {
-      const p = obj.producer;
-      if (typeof p.executor !== 'string') {
-        errors.push({ path: '$.producer.executor', message: 'Must be a string' });
-      } else if (!VALID_EXECUTORS.has(p.executor)) {
-        errors.push({ path: '$.producer.executor', message: `Must be one of ${[...VALID_EXECUTORS].join(', ')}; got ${JSON.stringify(p.executor)}` });
-      }
-      if (typeof p.name !== 'string') {
-        errors.push({ path: '$.producer.name', message: 'Must be a string' });
-      }
-      checkOptionalString(p.skill, '$.producer.skill', errors);
-    }
+    validateProducer(obj.producer, '$.producer', errors);
+  }
+
+  const successfulAcceptance = obj.status === 'SUCCEEDED'
+    && (obj.decision === 'PASS' || obj.decision === 'PASS_WITH_RESIDUAL_MINOR');
+  if (successfulAcceptance && obj.producer === undefined) {
+    errors.push({ path: '$.producer', message: 'Successful acceptance requires producer identity' });
+  }
+
+  if (obj.acceptance !== undefined) {
+    validateAcceptance(obj.acceptance, obj.producer, '$.acceptance', errors);
   }
 
   // ── Evidence ─────────────────────────────────────────────────────────────
@@ -131,6 +139,17 @@ export function validateReviewResult(input: unknown): ValidationError[] {
 
   if (obj.review !== undefined) {
     validateReviewData(obj.review, '$.review', errors);
+    if (obj.decision === 'PASS' || obj.decision === 'PASS_WITH_RESIDUAL_MINOR') {
+      const findings = isPlainObject(obj.review) && Array.isArray(obj.review.findings) ? obj.review.findings : [];
+      findings.forEach((finding, index) => {
+        if (isPlainObject(finding) && finding.severity === 'block' && (finding.status === undefined || finding.status === 'open')) {
+          errors.push({
+            path: `$.review.findings[${index}]`,
+            message: `${obj.decision} cannot contain an open block finding`,
+          });
+        }
+      });
+    }
   }
 
   // ── Repair ───────────────────────────────────────────────────────────────
@@ -173,6 +192,53 @@ function checkStringArray(val: unknown, path: string, errors: ValidationError[])
 
 function isPlainObject(val: unknown): val is Record<string, unknown> {
   return typeof val === 'object' && val !== null && !Array.isArray(val);
+}
+
+function validateProducer(val: unknown, path: string, errors: ValidationError[]): void {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: 'Must be an object' });
+    return;
+  }
+  if (typeof val.executor !== 'string') {
+    errors.push({ path: `${path}.executor`, message: 'Must be a string' });
+  } else if (!VALID_EXECUTORS.has(val.executor)) {
+    errors.push({ path: `${path}.executor`, message: `Must be one of ${[...VALID_EXECUTORS].join(', ')}; got ${JSON.stringify(val.executor)}` });
+  }
+  if (typeof val.name !== 'string' || val.name.length === 0) {
+    errors.push({ path: `${path}.name`, message: 'Must be a non-empty string' });
+  }
+  checkOptionalString(val.skill, `${path}.skill`, errors);
+}
+
+function producerIdentity(val: Record<string, unknown>): string {
+  return JSON.stringify([val.executor, val.name]);
+}
+
+function validateAcceptance(val: unknown, resultProducer: unknown, path: string, errors: ValidationError[]): void {
+  if (!isPlainObject(val)) {
+    errors.push({ path, message: 'Must be an object' });
+    return;
+  }
+  validateProducer(val.reviewer, `${path}.reviewer`, errors);
+  if (!isPlainObject(val.source_result)) {
+    errors.push({ path: `${path}.source_result`, message: 'Must be an object' });
+    return;
+  }
+  const source = val.source_result;
+  if (typeof source.run_id !== 'string' || source.run_id.length === 0) {
+    errors.push({ path: `${path}.source_result.run_id`, message: 'Must be a non-empty string' });
+  }
+  checkOptionalString(source.stage_id, `${path}.source_result.stage_id`, errors);
+  validateProducer(source.producer, `${path}.source_result.producer`, errors);
+
+  if (isPlainObject(val.reviewer) && isPlainObject(resultProducer)
+    && producerIdentity(val.reviewer) !== producerIdentity(resultProducer)) {
+    errors.push({ path: `${path}.reviewer`, message: 'Acceptance reviewer must match the result producer' });
+  }
+  if (isPlainObject(val.reviewer) && isPlainObject(source.producer)
+    && producerIdentity(val.reviewer) === producerIdentity(source.producer)) {
+    errors.push({ path: `${path}.reviewer`, message: 'Repair producer cannot accept its own result' });
+  }
 }
 
 function checkOptionalString(val: unknown, path: string, errors: ValidationError[]): void {

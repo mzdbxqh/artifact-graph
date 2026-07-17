@@ -618,6 +618,127 @@ describe('CLI: packet-prompt-audit command', () => {
   });
 });
 
+// ── Universal baseline fail-closed tests ──
+// @feature ACA17
+// @scenario S-64
+// @decision D-ACA-17
+
+/** Create a repo WITHOUT baseline files (missing universal baseline) */
+async function noBaselineRepo(name: string, configExtra?: string): Promise<string> {
+  const root = join(tmpdir(), `ppa-no-baseline-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  await mkdir(root, { recursive: true });
+
+  // Config with NO baseline files
+  const configContent = configExtra
+    ? `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n${configExtra}`
+    : `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`;
+  await write(root, 'artifact-graph.config.yaml', configContent);
+
+  // Feature (minimal — no baseline files)
+  await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
+id: A1
+title: Skill import/register
+status: done
+---
+# A1: Skill import/register
+`);
+
+  return root;
+}
+
+describe('packet-prompt-audit: universal baseline fail-closed', () => {
+  // targets-file mode: default (no universal_baseline: false) → fails
+  it('targets-file: default missing baseline fails with MISSING issues', async () => {
+    const root = await noBaselineRepo('tf-default-fail');
+    const targetsFile = join(root, 'targets.txt');
+    await writeFile(targetsFile, 'feature:A1\n');
+
+    const io = captureIo();
+    const code = await runCli(['packet-prompt-audit', '--root', root, '--targets-file', targetsFile, '--format', 'json'], io);
+    // Should fail: baseline files are missing, universal baseline defaults to enabled
+    expect(code).toBe(1);
+    const output = JSON.parse(io.stdoutText);
+    expect(output.failed).toBeGreaterThan(0);
+    // At least one target should have MISSING issues (baseline files missing)
+    const featureTarget = output.targets.find((t: { id: string }) => t.id === 'A1');
+    expect(featureTarget).toBeDefined();
+    expect(featureTarget.ok).toBe(false);
+    expect(featureTarget.issues.some((i: { code: string }) => i.code === 'MISSING')).toBe(true);
+  });
+
+  // targets-file mode: explicit false → passes
+  it('targets-file: explicit universal_baseline=false passes without baseline files', async () => {
+    const root = await noBaselineRepo('tf-explicit-false', 'context:\n  universal_baseline: false\n');
+    const targetsFile = join(root, 'targets.txt');
+    await writeFile(targetsFile, 'feature:A1\n');
+
+    const io = captureIo();
+    const code = await runCli(['packet-prompt-audit', '--root', root, '--targets-file', targetsFile, '--format', 'json'], io);
+    // Should pass: baseline explicitly disabled
+    expect(code).toBe(0);
+    const output = JSON.parse(io.stdoutText);
+    expect(output.passed).toBeGreaterThan(0);
+    const featureTarget = output.targets.find((t: { id: string }) => t.id === 'A1');
+    expect(featureTarget).toBeDefined();
+    expect(featureTarget.ok).toBe(true);
+  });
+
+  // discover mode: default (no universal_baseline: false) → fails
+  it('discover: default missing baseline fails with MISSING issues', async () => {
+    const root = await noBaselineRepo('discover-default-fail');
+
+    const io = captureIo();
+    const code = await runCli(['packet-prompt-audit', '--root', root, '--discover', '--format', 'json'], io);
+    // Should fail: baseline files are missing
+    expect(code).toBe(1);
+    const output = JSON.parse(io.stdoutText);
+    expect(output.failed).toBeGreaterThan(0);
+  });
+
+  // discover mode: explicit false → passes
+  it('discover: explicit universal_baseline=false passes without baseline files', async () => {
+    const root = await noBaselineRepo('discover-explicit-false', 'context:\n  universal_baseline: false\n');
+
+    const io = captureIo();
+    const code = await runCli(['packet-prompt-audit', '--root', root, '--discover', '--format', 'json'], io);
+    // Should pass: baseline explicitly disabled
+    expect(code).toBe(0);
+    const output = JSON.parse(io.stdoutText);
+    expect(output.passed).toBeGreaterThan(0);
+  });
+});
+
+describe('packet-prompt-audit: universal baseline config fallback', () => {
+  // Direct API: discoverAndAuditPromptBatch config fallback (no explicit universalBaseline option)
+  it('discoverAndAuditPromptBatch falls back to config.context.universal_baseline when option omitted', async () => {
+    const root = await noBaselineRepo('api-config-fallback', 'context:\n  universal_baseline: false\n');
+
+    const { discoverAndAuditPromptBatch } = await import('../src/packet-prompt-audit.js');
+    // Do NOT pass universalBaseline in options — it should fall back to config.context.universal_baseline=false
+    const summary = await discoverAndAuditPromptBatch(root, {
+      root,
+      summaryOnly: true,
+    });
+    // With baseline disabled, targets should pass (no missing baseline files)
+    expect(summary.total).toBeGreaterThanOrEqual(1);
+    expect(summary.failed).toBe(0);
+  });
+
+  // Direct API: discoverAndAuditPromptBatch defaults to baseline=true when no config option
+  it('discoverAndAuditPromptBatch defaults to baseline enabled when config has no universal_baseline', async () => {
+    const root = await noBaselineRepo('api-default-baseline');
+
+    const { discoverAndAuditPromptBatch } = await import('../src/packet-prompt-audit.js');
+    const summary = await discoverAndAuditPromptBatch(root, {
+      root,
+      summaryOnly: true,
+    });
+    // With baseline defaulting to enabled and no baseline files, should fail
+    expect(summary.total).toBeGreaterThanOrEqual(1);
+    expect(summary.failed).toBeGreaterThan(0);
+  });
+});
+
 describe('custom target: prompt audit', () => {
   async function customPromptAuditRepo(): Promise<string> {
     const root = join(tmpdir(), `prompt-audit-custom-${Date.now()}-${Math.random().toString(16).slice(2)}`);

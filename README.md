@@ -17,7 +17,7 @@ pnpm add -D artifact-graph
 Or install from GitHub:
 
 ```bash
-npm install github:mzdbxqh/artifact-graph
+npm install --save-dev github:mzdbxqh/artifact-graph
 ```
 
 Node.js `>=22.0.0` is required. For pnpm 10+, see [INSTALL.md](INSTALL.md) for the native build
@@ -26,11 +26,21 @@ allowlist setup.
 ## Quick Start
 
 ```bash
-artifact-graph init --root .
-artifact-graph validate --root . --warning-only
-artifact-graph version-lock refresh --changed-only --staged --format markdown
-artifact-graph version-lock audit --root . --strict-missing-lock
+# pnpm
+pnpm exec artifact-graph init --root .
+pnpm exec artifact-graph validate --root . --warning-only
+pnpm exec artifact-graph version-lock refresh --all --format markdown
+pnpm exec artifact-graph version-lock audit --root . --strict-missing-lock
+
+# npm
+npx artifact-graph init --root .
+npx artifact-graph validate --root . --warning-only
+npx artifact-graph version-lock refresh --all --format markdown
+npx artifact-graph version-lock audit --root . --strict-missing-lock
 ```
+
+> Use `version-lock refresh --all` for the initial lock. The `--changed-only --staged` variant is for
+> pre-commit hooks on existing projects — not for first-time initialization.
 
 ## Common Workflows
 
@@ -45,7 +55,13 @@ artifact-graph version-lock audit --root . --strict-missing-lock
 
 The package publishes `schemas/review-result.schema.json` and a matching TypeScript types + validateReviewResult validator API.
 The protocol is project-neutral and supports review, repair, batch evidence, findings, metrics, and
-fail-closed decisions. Invalid fields are reported with stable JSON paths.
+fail-closed decisions. Unknown top-level fields are rejected; `attempt` is limited to 1–3;
+successful acceptance requires `producer`; and `PASS`/`PASS_WITH_RESIDUAL_MINOR` cannot contain an
+open `block` finding. Independent repair re-review can record `acceptance.reviewer` and
+`acceptance.source_result`; the validator rejects self-acceptance by the repair producer. Invalid
+fields and semantic violations are reported with stable JSON paths. JSON Schema cannot compare
+cross-object field values, so callers must also run the semantic validator; stable identity is
+`executor + name`, while `skill` is only metadata and cannot establish independence.
 
 ## Related Project
 

@@ -78,6 +78,8 @@ interface PromptAuditOptions {
   sourceTargetsPath?: string;
   summaryOnly?: boolean;
   summaryDetail?: 'full' | 'compact';
+  /** When true (default), check universal baseline files. When false, skip. */
+  universalBaseline?: boolean;
 }
 
 // ── Stable filename for prompt output ──
@@ -109,6 +111,8 @@ async function auditSinglePromptTarget(
     const manifest: ContextManifest = resolveArtifactContext(graph, {
       target: { type: target.type, id: target.id },
       mode: 'implementation',
+      root: options.root,
+      universalBaseline: options.universalBaseline,
     });
 
     if (manifest.missing.length > 0) {
@@ -318,13 +322,19 @@ export interface DiscoverPromptAuditOptions {
   limit?: number;
   summaryOnly?: boolean;
   summaryDetail?: 'full' | 'compact';
+  /** When true (default), check universal baseline files. When false, skip. */
+  universalBaseline?: boolean;
 }
 
+// @feature ACA17
+// @decision D-ACA-17
 /**
  * Scan artifacts, discover targets, then audit prompts for each.
  * Single scan is reused for both discovery and audit.
  *
  * v1.11: Mirrors discoverAndAuditPackets() pattern from packet-audit.ts.
+ *
+ * When options.universalBaseline is undefined, falls back to config.context?.universal_baseline.
  */
 export async function discoverAndAuditPromptBatch(
   root: string,
@@ -337,6 +347,8 @@ export async function discoverAndAuditPromptBatch(
     type: d.type,
     id: d.id,
   }));
+  // Fallback: options.universalBaseline ?? config.context?.universal_baseline
+  const effectiveBaseline = options.universalBaseline ?? config.context?.universal_baseline;
   return auditPromptBatch(root, targets, {
     root,
     outDir: options.outDir,
@@ -344,6 +356,7 @@ export async function discoverAndAuditPromptBatch(
     maxChars: options.maxChars,
     summaryOnly: options.summaryOnly,
     summaryDetail: options.summaryDetail,
+    universalBaseline: effectiveBaseline,
   }, graph);
 }
 

@@ -1,7 +1,8 @@
-import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { runCli } from '../src/cli.js';
 import { MIN_PROMPT_CHARS } from '../src/packet-prompt.js';
 
@@ -23,6 +24,8 @@ async function cliRepo(name: string): Promise<string> {
       prefix: S-
       start: 1200
       end: 1299
+context:
+  universal_baseline: false
 `,
   );
   await write(
@@ -112,6 +115,24 @@ related_scenarios: [S-01]
       ],
     }, null, 2)}\n`,
   );
+
+  return root;
+}
+
+/** cliRepo variant with universal_baseline enabled and all 19 baseline files on disk. */
+async function cliRepoWithBaseline(name: string): Promise<string> {
+  const root = join(tmpdir(), `artifact-graph-cli-baseline-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  await mkdir(root, { recursive: true });
+  await write(root, 'artifact-graph.config.yaml', `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`);
+  await write(root, 'artifacts/prd/features/A1-skill-import.md', `---\nid: A1\ntitle: Skill import/register\nstatus: done\nscenarios: [S-01]\ndesign_docs: [design-skill-import]\n---\n# A1: Skill import/register\n`);
+  await write(root, 'artifacts/design/design-skill-import.md', `---\ntitle: Skill import design\nrelated_features: [A1]\nrelated_scenarios: [S-01]\n---\n# Skill import design\n`);
+  await write(root, 'artifacts/scenarios/batch-1.md', `## S-01: Import local skill\n\n**关联功能**: A1 (Skill import/register)\n`);
+  await write(root, 'artifacts/tests/e2e/test-01.md', `---\ntest_batch: test-01\nscope: A1\nac_coverage:\n  A1: [AC1, AC2]\nrelated_scenarios: [S-01]\n---\n\n# E2E 测试: Import\n`);
+  await write(root, 'artifacts/tests/e2e/e2e-test-registry.json', JSON.stringify({ registry_version: '1.0', total_batches: 1, total_test_cases: 1, batches: [{ batch_id: 'test-01', scope: 'A1', file: 'artifacts/tests/e2e/test-01.md', ac_coverage: { A1: ['AC1', 'AC2'] }, related_scenarios: ['S-01'], test_case_count: 1 }] }, null, 2) + '\n');
+  // All 19 baseline files
+  for (const bf of ['AGENTS.md', 'CLAUDE.md', 'artifacts/artifact-chain-spec.md', 'artifacts/blueprints/generation-packet-spec.md', 'artifacts/blueprints/implementation-blueprint.md', 'artifacts/contracts/interface-contracts.md', 'artifacts/contracts/data-contracts.md', 'artifacts/contracts/application-state-machines.md', 'artifacts/contracts/error-model.md', 'artifacts/contracts/report-contracts.md', 'artifacts/contracts/ui-flow-contracts.md', 'artifacts/contracts/non-functional-budgets.md', 'artifacts/domain/domain-glossary.md', 'artifacts/domain/bounded-context-map.md', 'artifacts/domain/domain-invariants.md', 'artifacts/tests/rule-golden-cases.md', 'artifacts/tests/verification-fixtures.md', 'artifacts/design/test-strategy.md', 'artifacts/traceability-matrix-v2.md']) {
+    await write(root, bf, `# ${bf}\n`);
+  }
   return root;
 }
 
@@ -292,7 +313,7 @@ describe('skills', () => {
   });
 
   it('resolves implementation context for a feature with --format json', async () => {
-    const root = await cliRepo('context-feature');
+    const root = await cliRepoWithBaseline('context-feature');
 
     const result = await capture(['context', '--root', root, '--feature', 'A1', '--format', 'json'], root);
     expect(result.code).toBe(0);
@@ -419,7 +440,7 @@ status: accepted
   });
 
   it('resolves context with --mode implementation --format json', async () => {
-    const root = await cliRepo('context-impl-mode');
+    const root = await cliRepoWithBaseline('context-impl-mode');
 
     const result = await capture(['context', '--root', root, '--feature', 'A1', '--mode', 'implementation', '--format', 'json'], root);
     expect(result.code).toBe(0);
@@ -488,7 +509,7 @@ status: accepted
   });
 
   it('baseline contains exactly 19 key files in implementation mode', async () => {
-    const root = await cliRepo('context-baseline-19');
+    const root = await cliRepoWithBaseline('context-baseline-19');
 
     const result = await capture(['context', '--root', root, '--feature', 'A1', '--mode', 'implementation', '--format', 'json'], root);
     expect(result.code).toBe(0);
@@ -518,10 +539,12 @@ status: accepted
 
     expect(baselinePaths).toEqual(expectedPaths);
     expect(manifest.context.baseline.every((i: { required: boolean }) => i.required === true)).toBe(true);
+    // All 19 baseline files exist in cliRepo fixture → no missing
+    expect(manifest.missing).toEqual([]);
   });
 
   it('markdown output groups items by tier', async () => {
-    const root = await cliRepo('context-md-tiers');
+    const root = await cliRepoWithBaseline('context-md-tiers');
 
     const result = await capture(['context', '--root', root, '--feature', 'A1', '--mode', 'implementation', '--format', 'markdown'], root);
     expect(result.code).toBe(0);
@@ -536,6 +559,64 @@ status: accepted
     expect(baselineIdx).toBeGreaterThanOrEqual(0);
     expect(targetIdx).toBeGreaterThanOrEqual(0);
     expect(baselineIdx).toBeLessThan(targetIdx);
+  });
+
+  it('reports missing baseline files and returns exit 1 when baseline files absent', async () => {
+    // Create a repo WITHOUT baseline files
+    const root = join(tmpdir(), `artifact-graph-cli-baseline-missing-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---\nid: A1\ntitle: Skill import\nstatus: done\n---\n# A1\n`);
+    await write(root, 'artifacts/scenarios/batch-1.md', `## S-01: Test\n\n关联功能: A1\n`);
+
+    const result = await capture(['context', '--root', root, '--feature', 'A1', '--format', 'json'], root);
+    expect(result.code).toBe(1);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.missing.length).toBeGreaterThan(0);
+    expect(manifest.missingDetails.some((d: { kind: string }) => d.kind === 'missing-baseline')).toBe(true);
+  });
+
+  it('universal_baseline: false in config skips baseline and returns exit 0', async () => {
+    const root = join(tmpdir(), `artifact-graph-cli-optout-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `context:\n  universal_baseline: false\nidRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---\nid: A1\ntitle: Skill import\nstatus: done\n---\n# A1\n`);
+    await write(root, 'artifacts/scenarios/batch-1.md', `## S-01: Test\n\n关联功能: A1\n`);
+
+    const result = await capture(['context', '--root', root, '--feature', 'A1', '--format', 'json'], root);
+    expect(result.code).toBe(0);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.missing).toEqual([]);
+    // Baseline should not be present when opt-out
+    expect(manifest.context.baseline).toBeUndefined();
+  });
+
+  // @feature ACA17
+  // @decision D-ACA-17
+  // Reject non-boolean universal_baseline (e.g. 0, "", "false")
+  it('rejects non-boolean universal_baseline in config (0, "", "false")', async () => {
+    const root = join(tmpdir(), `artifact-graph-cli-ub-type-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `context:\n  universal_baseline: 0\n`);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---\nid: A1\ntitle: Skill import\nstatus: done\n---\n# A1\n`);
+    const result = await capture(['context', '--root', root, '--feature', 'A1', '--format', 'json'], root);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('Invalid context.universal_baseline');
+  });
+
+  // Reject directory masquerading as baseline file
+  it('reports directory-as-baseline as missing (not a regular file)', async () => {
+    const root = join(tmpdir(), `artifact-graph-cli-dir-bl-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    await mkdir(root, { recursive: true });
+    await write(root, 'artifact-graph.config.yaml', `idRanges:\n  scenario:\n    batch-49:\n      prefix: S-\n      start: 1200\n      end: 1299\n`);
+    await write(root, 'artifacts/prd/features/A1-skill-import.md', `---\nid: A1\ntitle: Skill import\nstatus: done\n---\n# A1\n`);
+    await write(root, 'artifacts/scenarios/batch-1.md', `## S-01: Test\n\n关联功能: A1\n`);
+    // Create AGENTS.md as a directory instead of a file
+    await mkdir(join(root, 'AGENTS.md'), { recursive: true });
+    const result = await capture(['context', '--root', root, '--feature', 'A1', '--format', 'json'], root);
+    expect(result.code).toBe(1);
+    const manifest = JSON.parse(result.stdout);
+    expect(manifest.missing.some((m: string) => m.includes('AGENTS.md') && m.includes('not a regular file'))).toBe(true);
   });
 
   it('returns exit code 1 for invalid --mode', async () => {
@@ -659,6 +740,8 @@ describe('--target CLI integration', () => {
     displayName: "API Contract"
 idPatterns:
   api_contract: "^API-\\\\d+$"
+context:
+  universal_baseline: false
 `);
     await write(root, 'artifacts/prd/features/A1-skill-import.md', `---
 id: A1
@@ -1206,5 +1289,130 @@ describe('packet source file integrity', () => {
     expect(mod.BASELINE_CONSTRAINTS).toBeDefined();
     expect(Array.isArray(mod.BASELINE_CONSTRAINTS)).toBe(true);
     expect(mod.BASELINE_CONSTRAINTS.length).toBeGreaterThan(0);
+  });
+
+  // @scenario S-09
+  // @feature ACA8
+  describe('CLI --help/-h safety: no command side effects', () => {
+    const tempRoots: string[] = [];
+
+    afterEach(async () => {
+      for (const root of tempRoots) {
+        await rm(root, { recursive: true, force: true });
+      }
+      tempRoots.length = 0;
+    });
+
+    async function gitRepo(name: string): Promise<string> {
+      const root = join(tmpdir(), `artifact-graph-cli-help-${name}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+      await mkdir(root, { recursive: true });
+      execSync('git init -q', { cwd: root });
+      tempRoots.push(root);
+      return root;
+    }
+
+    async function hookExists(hookPath: string): Promise<boolean> {
+      try {
+        await lstat(hookPath);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function cliRepoTracked(name: string): Promise<string> {
+      const root = await cliRepo(name);
+      tempRoots.push(root);
+      return root;
+    }
+
+    async function configExists(configPath: string): Promise<boolean> {
+      try {
+        await lstat(configPath);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    // hooks install-git --help/-h does not create hooks
+    it.each([[['hooks', 'install-git', '--help']], [['hooks', 'install-git', '-h']], [['hooks', '--help']], [['hooks', '-h']]])(
+      'hooks %j returns exit 0, prints usage, and does not create hooks',
+      async (args: string[]) => {
+        const root = await gitRepo(`help-${args.join('-')}`);
+        const result = await capture(args, root);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('artifact-graph <command>');
+        const hooksDir = join(root, '.git', 'hooks');
+        expect(await hookExists(join(hooksDir, 'pre-commit'))).toBe(false);
+        expect(await hookExists(join(hooksDir, 'pre-push'))).toBe(false);
+      },
+    );
+
+    // version-lock --help/-h returns usage without executing
+    it.each([[['version-lock', '--help']], [['version-lock', '-h']]])(
+      'version-lock %j returns exit 0 and prints usage',
+      async (args: string[]) => {
+        const root = await cliRepoTracked(`vl-help-${args.join('-')}`);
+        const result = await capture(args, root);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('artifact-graph <command>');
+      },
+    );
+
+    // version-lock refresh --all --help/-h returns usage without executing
+    it.each([[['version-lock', 'refresh', '--all', '--help']], [['version-lock', 'refresh', '--all', '-h']]])(
+      'version-lock refresh %j returns exit 0 and prints usage',
+      async (args: string[]) => {
+        const root = await cliRepoTracked(`vl-refresh-help-${args.join('-')}`);
+        const result = await capture(args, root);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('artifact-graph <command>');
+      },
+    );
+
+    // init --help/-h does not create config
+    it.each([[['init', '--help']], [['init', '-h']]])(
+      'init %j returns exit 0, prints usage, and does not create config',
+      async (args: string[]) => {
+        const root = await gitRepo(`init-help-${args.join('-')}`);
+        const result = await capture(args, root);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('artifact-graph <command>');
+        expect(await configExists(join(root, 'artifact-graph.config.yaml'))).toBe(false);
+      },
+    );
+
+    // scan --help/-h does not create cache
+    it.each([[['scan', '--help']], [['scan', '-h']]])(
+      'scan %j returns exit 0, prints usage, and does not create cache',
+      async (args: string[]) => {
+        const root = await cliRepoTracked(`scan-help-${args.join('-')}`);
+        const result = await capture(args, root);
+        expect(result.code).toBe(0);
+        expect(result.stdout).toContain('artifact-graph <command>');
+        // Scan should not create cache when --help is passed
+        expect(await configExists(join(root, '.artifact-graph', 'index.json'))).toBe(false);
+      },
+    );
+
+    // hooks install-git without --help installs hooks normally
+    it('hooks install-git without --help installs hooks normally', async () => {
+      const root = await gitRepo('normal-install');
+      const result = await capture(['hooks', 'install-git'], root);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('installed:');
+      expect(await hookExists(join(root, '.git', 'hooks', 'pre-commit'))).toBe(true);
+      expect(await hookExists(join(root, '.git', 'hooks', 'pre-push'))).toBe(true);
+    });
+
+    // init without --help creates config normally
+    it('init without --help creates config normally', async () => {
+      const root = await gitRepo('normal-init');
+      const result = await capture(['init', '--root', root], root);
+      expect(result.code).toBe(0);
+      expect(result.stdout).toContain('Created');
+      expect(await configExists(join(root, 'artifact-graph.config.yaml'))).toBe(true);
+    });
   });
 });

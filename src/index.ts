@@ -1,8 +1,9 @@
 import Database from 'better-sqlite3';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
+import { accessSync, constants as fsConstants, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, extname, join, relative } from 'node:path';
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT } from './packet-constants.js';
 import { VALID_PACKET_TARGET_TYPES, isPacketTargetType } from './packet-validator.js';
 
@@ -82,6 +83,11 @@ export interface ArtifactSchema {
   forbiddenEdges: ArtifactEdgeRule[];
   statuses: string[];
   idRanges: Record<string, Record<string, { prefix: string; start: number; end: number }>>;
+  /** Context resolution overrides */
+  context?: {
+    /** When false, skip universal baseline injection. Default: true. */
+    universal_baseline?: boolean;
+  };
 }
 
 export const TARGET_ARTIFACT_TYPES = VALID_PACKET_TARGET_TYPES;
@@ -164,6 +170,8 @@ export interface ArtifactGraph {
   nodes: ArtifactNode[];
   edges: ArtifactEdge[];
   generatedAt: string;
+  /** Normalized absolute project root passed to scanArtifacts. Optional for backward compatibility. */
+  root?: string;
   /** Scan-time diagnostics. Optional for backward compatibility with consumers that build graph literals without this field. */
   diagnostics?: ValidationIssue[];
 }
@@ -187,7 +195,7 @@ export interface ContextItem {
 export interface MissingDetail {
   ref: string;
   from: string;
-  kind: 'unresolved-outgoing' | 'unresolved-incoming' | 'target-not-found' | 'multiple-targets';
+  kind: 'unresolved-outgoing' | 'unresolved-incoming' | 'target-not-found' | 'multiple-targets' | 'missing-baseline';
   message: string;
   suggestedAction: string;
 }
@@ -206,6 +214,8 @@ export interface ContextManifest {
   missing: string[];
   missingDetails?: MissingDetail[];
   omitted?: ContextItem[];
+  /** Explicit universal baseline policy: true=enabled, false=disabled. Used by validatePacket to prevent inferring opt-out from total=0. */
+  baselinePolicy?: boolean;
 }
 
 export type ContextMode = 'full' | 'implementation';
@@ -220,6 +230,14 @@ export interface ContextOptions {
   target?: ArtifactTarget;
   mode?: ContextMode;
   maxPerCategory?: number;
+  /**
+   * When true (default), inject all ALWAYS_PRESENT_ITEMS as required baseline
+   * and report missing ones in manifest.missing. When false, skip baseline
+   * injection entirely for lightweight projects.
+   */
+  universalBaseline?: boolean;
+  /** Project root for baseline file existence checks. Required when universalBaseline is true. */
+  root?: string;
 }
 
 export const DEFAULT_SCHEMA: ArtifactSchema = {
@@ -230,7 +248,7 @@ export const DEFAULT_SCHEMA: ArtifactSchema = {
     scenario: { paths: ['artifacts/scenarios/**/*.md'], displayName: '场景剧本', role: 'scenario', layer: 'scenario', aliases: ['scenarios', 'scenario-script'] },
     design: { paths: ['artifacts/design/**/*.md'], displayName: '设计规格', role: 'design', layer: 'design', aliases: ['design-spec', 'design_docs'] },
     test: { paths: ['heimdall/packages/**/*.test.ts'], displayName: '代码注释追溯', role: 'context', layer: 'implementation', aliases: ['code-test', 'code-trace', 'unit-test'] },
-    e2e_test: { paths: ['artifacts/tests/e2e/*.md'], displayName: 'E2E 测试规格', role: 'e2e_test', layer: 'verification', aliases: ['e2e-test', 'e2e_tests'] },
+    e2e_test: { paths: ['artifacts/tests/e2e/*.md'], displayName: 'E2E 测试规格', role: 'e2e_test', layer: 'verification', aliases: ['e2e-test', 'e2e_tests', 'tc'] },
     e2e_registry: { paths: ['artifacts/tests/e2e/e2e-test-registry.json'], displayName: 'E2E 测试注册表', role: 'context', layer: 'verification', aliases: ['e2e-registry'] },
     'rule-golden-cases': { paths: ['artifacts/tests/rule-golden-cases.md'], displayName: '规则黄金测试用例', role: 'context', layer: 'verification', aliases: ['rule_golden_cases'] },
     'test-strategy': { paths: ['artifacts/design/test-strategy.md'], displayName: '测试策略', role: 'context', layer: 'verification', aliases: ['test_strategy'] },
@@ -275,6 +293,16 @@ export async function loadConfig(root: string): Promise<ArtifactSchema> {
     }
   }
 
+  // @feature ACA17
+  // @decision D-ACA-17
+  // Validate universal_baseline type: must be boolean if present
+  const ub = parsed.context?.universal_baseline;
+  if (ub !== undefined && typeof ub !== 'boolean') {
+    throw new Error(
+      `Invalid context.universal_baseline: ${JSON.stringify(ub)}. Must be boolean (true or false).`
+    );
+  }
+
   return {
     ...DEFAULT_SCHEMA,
     ...parsed,
@@ -288,7 +316,7 @@ export async function loadConfig(root: string): Promise<ArtifactSchema> {
   };
 }
 
-export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics: ValidationIssue[] = []): ArtifactGraph {
+export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics: ValidationIssue[] = [], root?: string): ArtifactGraph {
   const graphNodes = nodes.map((node) => ({ ...node, uid: toUid(node.type, node.code) }));
   graphNodes.sort(compareNode);
   edges.sort(compareEdge);
@@ -306,6 +334,7 @@ export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEd
     nodes: graphNodes,
     edges: dedupedEdges,
     generatedAt: new Date(0).toISOString(),
+    ...(root ? { root } : {}),
     diagnostics: diagnostics.sort((left, right) => left.code.localeCompare(right.code) || left.path.localeCompare(right.path) || left.line - right.line),
   };
 }
@@ -340,7 +369,8 @@ export async function scanArtifacts(root: string, schema?: ArtifactSchema): Prom
     }
   }
 
-  const graph = buildGraph(nodes, edges, scanDiagnostics);
+  const absoluteRoot = isAbsolute(root) ? root : resolve(root);
+  const graph = buildGraph(nodes, edges, scanDiagnostics, absoluteRoot);
   return resolveMatrixEdges(graph);
 }
 
@@ -737,23 +767,34 @@ export async function validateScenarioPrdLinkIndex(root: string, graph: Artifact
 function validateCodeCommentTraceabilityFormat(graph: ArtifactGraph): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   for (const node of graph.nodes) {
-    if (node.type !== 'test') {
+    if (node.type !== 'test' && node.type !== 'implementation') {
       continue;
     }
     const invalidComments = node.attrs?.invalidTraceabilityComments;
-    if (!Array.isArray(invalidComments)) {
-      continue;
+    if (Array.isArray(invalidComments)) {
+      for (const invalid of invalidComments) {
+        const line = typeof invalid?.line === 'number' ? invalid.line : node.line;
+        const reason = typeof invalid?.reason === 'string' ? invalid.reason : 'traceability tags must use standalone // comments';
+        issues.push(issue(
+          'CODE_COMMENT_TRACEABILITY_FORMAT',
+          `${reason}: ${typeof invalid?.text === 'string' ? invalid.text : ''}`.trim(),
+          node.path,
+          line,
+          { node: node.uid },
+        ));
+      }
     }
-    for (const invalid of invalidComments) {
-      const line = typeof invalid?.line === 'number' ? invalid.line : node.line;
-      const reason = typeof invalid?.reason === 'string' ? invalid.reason : 'traceability tags must use standalone // comments';
-      issues.push(issue(
-        'CODE_COMMENT_TRACEABILITY_FORMAT',
-        `${reason}: ${typeof invalid?.text === 'string' ? invalid.text : ''}`.trim(),
-        node.path,
-        line,
-        { node: node.uid },
-      ));
+    const deprecatedComments = node.attrs?.deprecatedTraceabilityComments;
+    if (Array.isArray(deprecatedComments)) {
+      for (const deprecated of deprecatedComments) {
+        issues.push(issue(
+          'E2E-TRACE-007',
+          '@tc is deprecated; use @e2e_test instead',
+          node.path,
+          typeof deprecated?.line === 'number' ? deprecated.line : node.line,
+          { node: node.uid, severity: 'warning' },
+        ));
+      }
     }
   }
   return issues;
@@ -1286,13 +1327,16 @@ function parseTest(path: string, raw: string, schema: ArtifactSchema = DEFAULT_S
   const isTest = isTestFile(path);
   const nodeType = isTest ? 'test' : 'implementation';
   const edgeKind = isTest ? 'verifies' : 'implements';
+  const attrs: Record<string, unknown> = {};
+  if (traceabilityComments.invalid.length > 0) attrs.invalidTraceabilityComments = traceabilityComments.invalid;
+  if (traceabilityComments.deprecated.length > 0) attrs.deprecatedTraceabilityComments = traceabilityComments.deprecated;
   const node = {
     type: nodeType,
     code: path,
     title: path.split('/').at(-1) ?? path,
     path,
     line: 1,
-    attrs: traceabilityComments.invalid.length > 0 ? { invalidTraceabilityComments: traceabilityComments.invalid } : {},
+    attrs,
   };
   let hasTags = false;
   for (const { tags, lineNumber } of traceabilityComments.canonical) {
@@ -1303,7 +1347,7 @@ function parseTest(path: string, raw: string, schema: ArtifactSchema = DEFAULT_S
       }
     }
   }
-  if (hasTags || traceabilityComments.invalid.length > 0) {
+  if (hasTags || traceabilityComments.invalid.length > 0 || traceabilityComments.deprecated.length > 0) {
     nodes.push(node);
   }
   return { nodes, edges };
@@ -1312,9 +1356,11 @@ function parseTest(path: string, raw: string, schema: ArtifactSchema = DEFAULT_S
 function scanTraceabilityComments(raw: string, schema: ArtifactSchema = DEFAULT_SCHEMA): {
   canonical: Array<{ tags: Partial<Record<string, string[]>>; lineNumber: number }>;
   invalid: Array<{ line: number; text: string; reason: string }>;
+  deprecated: Array<{ line: number; text: string }>;
 } {
   const canonical: Array<{ tags: Partial<Record<string, string[]>>; lineNumber: number }> = [];
   const invalid: Array<{ line: number; text: string; reason: string }> = [];
+  const deprecated: Array<{ line: number; text: string }> = [];
 
   for (const comment of scanCodeComments(raw)) {
     if (!containsTraceabilityTag(comment.text, schema)) {
@@ -1331,6 +1377,9 @@ function scanTraceabilityComments(raw: string, schema: ArtifactSchema = DEFAULT_
     const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
+      if (/(?:^|\s)@tc(?=\s|$)/.test(comment.text.trim())) {
+        deprecated.push({ line: comment.lineNumber, text: comment.text.trim() });
+      }
     } else {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: parsed.reason });
     }
@@ -1347,12 +1396,15 @@ function scanTraceabilityComments(raw: string, schema: ArtifactSchema = DEFAULT_
     const parsed = parseTraceabilityTagLine(comment.text.trim(), schema);
     if (parsed.valid) {
       canonical.push({ tags: parsed.tags, lineNumber: comment.lineNumber });
+      if (/(?:^|\s)@tc(?=\s|$)/.test(comment.text.trim())) {
+        deprecated.push({ line: comment.lineNumber, text: comment.text.trim() });
+      }
     } else {
       invalid.push({ line: comment.lineNumber, text: comment.text.trim(), reason: parsed.reason });
     }
   }
 
-  return { canonical, invalid };
+  return { canonical, invalid, deprecated };
 }
 
 function scanCodeComments(raw: string): Array<{ kind: 'line' | 'block'; text: string; lineNumber: number; standalone: boolean }> {
@@ -1545,8 +1597,24 @@ function expandCodeRange(value: string): string[] {
 }
 
 function containsTraceabilityTag(value: string, schema: ArtifactSchema = DEFAULT_SCHEMA): boolean {
-  // Quick check for @ prefix; detailed validation is done in parseTraceabilityTagLine
-  return /@[\w][\w-]*\b/.test(value);
+  // @feature ACA17
+  // @scenario S-57
+  // @scenario S-58
+  // @scenario S-59
+  // @decision D-ACA-17
+  // Only registered canonical types and explicit aliases enter traceability parsing.
+  // Unknown annotations belong to other tools and must not create false diagnostics.
+  const tokens = new Set<string>();
+  for (const [type, definition] of Object.entries(schema.types)) {
+    tokens.add(type);
+    for (const alias of definition.aliases ?? []) tokens.add(alias);
+  }
+  if (tokens.size === 0) return false;
+  const alternatives = [...tokens]
+    .sort((a, b) => b.length - a.length)
+    .map(token => token.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'))
+    .join('|');
+  return new RegExp(`(?:^|\\s)@(?:${alternatives})(?=\\s|$)`).test(value);
 }
 
 function parseDesign(path: string, raw: string): { nodes: Omit<ArtifactNode, 'uid'>[]; edges: ArtifactEdge[] } {
@@ -2804,8 +2872,9 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
     line: number;
   }
   const refToSource = new Map<string, TcAnnotation[]>();
-  const tcAnnotationRegex = /\/\/!?\s*@tc\s+(\S+?)\s+\[(\w+)\]/;
-  const tcAnnotationNoLevelRegex = /\/\/!?\s*@tc\s+(\S+)/;
+  // Match both @e2e_test (new canonical) and @tc (deprecated) tags
+  const tcAnnotationRegex = /\/\/!?\s*@(?:e2e_test|tc)\s+(\S+?)\s+\[(\w+)\]/;
+  const tcAnnotationNoLevelRegex = /\/\/!?\s*@(?:e2e_test|tc)\s+(\S+)/;
 
   for (const specFile of specFiles) {
     const fullSpecPath = join(root, specFile);
@@ -2893,15 +2962,15 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
           continue;
         }
       }
-      // Check that the referenced file has a @tc line-comment annotation for this TC.
-      // Block-comment @tc (e.g. JSDoc) is NOT recognized — only `// @tc` is valid.
+      // Check that the referenced file has a @e2e_test or @tc line-comment annotation for this TC.
+      // Block-comment annotations (e.g. JSDoc) are NOT recognized — only `// @e2e_test` or `// @tc` is valid.
       const annotationsForTc = refToSource.get(tcKey);
       const hasAnnotationInFile = annotationsForTc?.some((ann) => {
         const normalizedAnnFile = ann.file.startsWith('heimdall/') ? ann.file : `heimdall/${ann.file}`;
         return normalizedAnnFile === normalizedRefFile;
       }) ?? false;
       if (!hasAnnotationInFile) {
-        issues.push(issue('E2E-TRACE-003', `executable_ref target ${entry.file} has no // @tc ${tcKey} line-comment annotation`, path, line, { node: tcKey, severity: 'warning' }));
+        issues.push(issue('E2E-TRACE-003', `executable_ref target ${entry.file} has no E2E trace annotation ${tcKey}`, path, line, { node: tcKey, severity: 'warning' }));
         continue;
       }
       validFiles.push(normalizedRefFile);
@@ -2909,18 +2978,18 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
     tcValidRefFiles.set(tcKey, validFiles);
   }
 
-  // Check B: @tc annotation references non-existent Markdown TC
+  // Check B: E2E trace annotation references non-existent Markdown TC
   for (const [tcKey, annotations] of refToSource) {
     const batch = tcKey.split(':')[0];
     if (!mdBatches.has(batch)) {
       for (const ann of annotations) {
-        issues.push(issue('E2E-TRACE-002', `@tc annotation ${tcKey} references non-existent E2E batch "${batch}"`, ann.file, ann.line, { node: tcKey, severity: 'warning' }));
+        issues.push(issue('E2E-TRACE-002', `E2E trace annotation ${tcKey} references non-existent E2E batch "${batch}"`, ann.file, ann.line, { node: tcKey, severity: 'warning' }));
       }
       continue;
     }
     if (!mdToRef.has(tcKey) && !await hasMarkdownTc(tcKey, e2eDir)) {
       for (const ann of annotations) {
-        issues.push(issue('E2E-TRACE-002', `@tc annotation ${tcKey} references non-existent Markdown TC`, ann.file, ann.line, { node: tcKey, severity: 'warning' }));
+        issues.push(issue('E2E-TRACE-002', `E2E trace annotation ${tcKey} references non-existent Markdown TC`, ann.file, ann.line, { node: tcKey, severity: 'warning' }));
       }
     }
   }
@@ -2947,7 +3016,7 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
       const primaryRef = refEntries[0];
       const normalizedPrimary = primaryRef?.file.startsWith('heimdall/') ? primaryRef?.file : `heimdall/${primaryRef?.file ?? ''}`;
       const detail = `file: MD refs=[${refEntries.map((e) => e.file).join(', ')}] vs source=${ann.file}`;
-      issues.push(issue('E2E-TRACE-003', `executable_ref ↔ @tc mismatch for ${tcKey}: ${detail}`, path, line, { node: tcKey, severity: 'warning' }));
+      issues.push(issue('E2E-TRACE-003', `executable_ref ↔ E2E trace annotation mismatch for ${tcKey}: ${detail}`, path, line, { node: tcKey, severity: 'warning' }));
     }
   }
 
@@ -3170,19 +3239,19 @@ async function validatePartialRustEvidence(
       return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
     }
 
-    // Check for @tc annotation matching this TC key.
-    // Support both `// @tc` and `//! @tc` (Rust doc-comment line).
+    // Check for @e2e_test or @tc annotation matching this TC key.
+    // Support both `// @tc` / `// @e2e_test` and `//! @tc` / `//! @e2e_test` (Rust doc-comment line).
     // Also require the annotation level to be [partial_rust].
     const tcAnnotationPattern = new RegExp(
-      `//[/!]?\\s*@tc\\s+${escapeRegExp(tcKey)}\\s+\\[partial_rust\\]`,
+      `//[/!]?\\s*@(?:e2e_test|tc)\\s+${escapeRegExp(tcKey)}\\s+\\[partial_rust\\]`,
     );
     if (!tcAnnotationPattern.test(content)) {
-      // Also check without explicit level — if file only has `// @tc` without level
-      const noLevelPattern = new RegExp(`//[/!]?\\s*@tc\\s+${escapeRegExp(tcKey)}\\b`);
+      // Also check without explicit level — if file only has `// @tc` or `// @e2e_test` without level
+      const noLevelPattern = new RegExp(`//[/!]?\\s*@(?:e2e_test|tc)\\s+${escapeRegExp(tcKey)}\\b`);
       if (noLevelPattern.test(content)) {
-        return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has @tc ${tcKey} but not tagged [partial_rust]` };
+        return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has E2E trace annotation ${tcKey} but not tagged [partial_rust]` };
       }
-      return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has no @tc ${tcKey} annotation` };
+      return { hasValidPartialRust: false, detail: `partial_rust file ${ref.file} has no E2E trace annotation ${tcKey}` };
     }
   }
 
@@ -3559,9 +3628,14 @@ function mergeArtifactTypes(
 ): Record<string, ArtifactTypeSchema> {
   const result: Record<string, ArtifactTypeSchema> = { ...base };
   for (const [type, definition] of Object.entries(override ?? {})) {
+    const aliases = [
+      ...(base[type]?.aliases ?? []),
+      ...(definition.aliases ?? []),
+    ].filter((alias, index, all) => all.indexOf(alias) === index);
     result[type] = {
       ...(base[type] ?? {}),
       ...definition,
+      ...(aliases.length > 0 ? { aliases } : {}),
     };
   }
   return result;
@@ -3692,6 +3766,8 @@ const TIER_ORDER: ContextTier[] = ['baseline', 'target', 'direct', 'matrix', 'tr
 export function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOptions): ContextManifest {
   const mode: ContextMode = opts.mode ?? 'full';
   const maxPerCategory = opts.maxPerCategory ?? 20;
+  const universalBaseline = opts.universalBaseline ?? true;
+  const root = opts.root ?? graph.root;
 
   // Determine target — unified `target` field OR exactly one legacy field
   const legacyCount = [opts.feature, opts.scenario, opts.decision, opts.design, opts.e2e_test].filter(Boolean).length;
@@ -3854,13 +3930,83 @@ export function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOption
   // Deduplicate by path: merge reasons for same file path
   const pathMap = new Map<string, { path: string; reasons: string[]; category: string; required: boolean; tier: ContextTier }>();
 
-  // Always-present baseline files (required)
-  for (const ap of ALWAYS_PRESENT) {
-    const existing = pathMap.get(ap.path);
-    if (existing) {
-      if (!existing.reasons.includes(ap.reason)) existing.reasons.push(ap.reason);
+  // Always-present baseline files (required) — skipped when universalBaseline === false
+  // @feature ACA17
+  // @decision D-ACA-17
+  if (universalBaseline) {
+    for (const ap of ALWAYS_PRESENT) {
+      const existing = pathMap.get(ap.path);
+      if (existing) {
+        if (!existing.reasons.includes(ap.reason)) existing.reasons.push(ap.reason);
+      } else {
+        pathMap.set(ap.path, { path: ap.path, reasons: [ap.reason], category: 'baseline', required: true, tier: 'baseline' });
+      }
+    }
+
+    // Fail-closed: report required baseline files that are not present on disk
+    if (root) {
+      for (const ap of ALWAYS_PRESENT) {
+        const fullPath = join(root, ap.path);
+        let stat;
+        try { stat = statSync(fullPath); } catch { stat = null; }
+        if (!stat) {
+          const msg = `Required baseline artifact not found: ${ap.path}`;
+          if (!missing.includes(msg)) {
+            missing.push(msg);
+            missingDetails.push({
+              ref: ap.path,
+              from: 'baseline',
+              kind: 'missing-baseline',
+              message: msg,
+              suggestedAction: `创建文件 ${ap.path} 或配置跳过 universal baseline`,
+            });
+          }
+        } else if (!stat.isFile()) {
+          const msg = `Required baseline artifact is not a regular file: ${ap.path}`;
+          if (!missing.includes(msg)) {
+            missing.push(msg);
+            missingDetails.push({
+              ref: ap.path,
+              from: 'baseline',
+              kind: 'missing-baseline',
+              message: msg,
+              suggestedAction: `将 ${ap.path} 从目录改为文件，或配置跳过 universal baseline`,
+            });
+          }
+        } else {
+          // Check readability: stat.isFile() passes but file may not be readable
+          try {
+            accessSync(fullPath, fsConstants.R_OK);
+          } catch {
+            const msg = `Required baseline artifact is not readable: ${ap.path}`;
+            if (!missing.includes(msg)) {
+              missing.push(msg);
+              missingDetails.push({
+                ref: ap.path,
+                from: 'baseline',
+                kind: 'missing-baseline',
+                message: msg,
+                suggestedAction: `修复 ${ap.path} 的文件权限，或配置跳过 universal baseline`,
+              });
+            }
+          }
+        }
+      }
     } else {
-      pathMap.set(ap.path, { path: ap.path, reasons: [ap.reason], category: 'baseline', required: true, tier: 'baseline' });
+      // Fail-closed: baseline enabled but no root to verify file existence
+      for (const ap of ALWAYS_PRESENT) {
+        const msg = `Cannot verify baseline without root: ${ap.path}`;
+        if (!missing.includes(msg)) {
+          missing.push(msg);
+          missingDetails.push({
+            ref: ap.path,
+            from: 'baseline',
+            kind: 'missing-baseline',
+            message: msg,
+            suggestedAction: `传递 root 参数或配置跳过 universal baseline`,
+          });
+        }
+      }
     }
   }
 
@@ -3986,6 +4132,7 @@ export function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOption
     missing,
     missingDetails,
     omitted,
+    baselinePolicy: universalBaseline,
   };
 }
 

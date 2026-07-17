@@ -161,6 +161,9 @@ async function smokeSchemaSubpath(consumerDir) {
       hasDollarId: typeof schema['$id'] === 'string',
       hasType: schema.type === 'object',
       hasSchemaVersion: Array.isArray(schema.required) && schema.required.includes('schema_version'),
+      rejectsUnknownTopLevel: schema.additionalProperties === false,
+      maxAttempt: schema.properties?.attempt?.maximum,
+      hasAcceptance: schema.properties?.acceptance?.properties?.reviewer?.['$ref'] === '#/$defs/producer',
     }));
     `,
   ], { cwd: consumerDir });
@@ -169,6 +172,9 @@ async function smokeSchemaSubpath(consumerDir) {
   assert.equal(check.hasDollarId, true, 'schema missing $id');
   assert.equal(check.hasType, true, 'schema missing type=object');
   assert.equal(check.hasSchemaVersion, true, 'schema missing required schema_version');
+  assert.equal(check.rejectsUnknownTopLevel, true, 'schema must reject unknown top-level fields');
+  assert.equal(check.maxAttempt, 3, 'schema attempt maximum must be 3');
+  assert.equal(check.hasAcceptance, true, 'schema missing independent acceptance identity');
   console.log('  schema subpath import: OK');
 }
 
