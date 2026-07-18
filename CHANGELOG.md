@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.6.1
+
+### Fixed
+
+- **CHANGELOG documentation corrections**: correct two 0.6.0 CHANGELOG descriptions to match
+  actual implementation:
+  - `E2E-UNIT-TEST-NOT-E2E`: the trigger condition is based on `e2e.runners[].kind` and runner
+    root/include/exclude/testIgnore acceptance, not `.test.ts` / `.spec.ts` file suffix.
+  - `E2E-TRACE-004`: when Markdown explicitly declares `chain_type: desktop_chain`, conflicts with
+    source-level `mock_playwright` annotations are entirely suppressed (not downgraded to info).
+
 ## 0.6.0
 
 ### Added
@@ -25,7 +36,9 @@
   `E2E_AC_COVERAGE_RATE_FREETEXT` — this field must be computed, not manually entered.
 
 - **Deterministic checklist rules**:
-  - `E2E-UNIT-TEST-NOT-E2E`: executable_ref pointing to `.test.ts` instead of `.spec.ts`.
+  - `E2E-UNIT-TEST-NOT-E2E`: executable_ref target is only accepted by unit runner(s)
+    (per `e2e.runners[].kind` and runner root/include/exclude/testIgnore acceptance), not by any
+    e2e/integration runner.
   - Version-lock liveness: E2E spec files with no active `@e2e_test`/`@tc` annotations produce
     `orphan_lock` liveness warnings.
 
@@ -33,9 +46,10 @@
   Markdown test files. `--deterministic` flag sets `generated_at` to epoch for diff checks.
   `--out <path>` writes output to file.
 
-- **E2E-TRACE-004 Markdown authority**: When a TC explicitly declares `chain_type: desktop_chain`,
-  conflicts with source-level `mock_playwright` annotations are downgraded to info (per
-  artifact-chain-spec §5.2: Markdown side is authoritative).
+- **E2E-TRACE-004 Markdown authority**: When a TC explicitly declares `chain_type: desktop_chain`
+  in its Markdown, the Markdown side is authoritative (per artifact-chain-spec §5.2) — conflicts
+  with source-level `mock_playwright` annotations are entirely suppressed (not emitted as warning
+  or info).
 
 ### Changed
 
