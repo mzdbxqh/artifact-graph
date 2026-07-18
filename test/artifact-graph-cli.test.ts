@@ -186,6 +186,29 @@ describe('artifact-graph CLI', () => {
     expect(JSON.parse(validate.stdout)).toEqual([]);
   });
 
+  it('automatically emits E2E coverage JSON when executable_ref thresholds are configured', async () => {
+    const root = await cliRepo('coverage-threshold-auto');
+    try {
+      const configPath = join(root, 'artifact-graph.config.yaml');
+      const config = await readFile(configPath, 'utf-8');
+      await writeFile(configPath, `${config}e2e:\n  executable_ref_warning: 0.5\n  executable_ref_error: 0.1\n`);
+      const result = await capture(['validate', '--root', root, '--warning-only', '--format', 'json'], root);
+      const output = JSON.parse(result.stdout) as {
+        issues: Array<{ code: string }>;
+        e2eCoverage: { totalTestCases: number; withExecutableRef: number; executableRefRate: string };
+      };
+      expect(result.code).toBe(0);
+      expect(output.e2eCoverage).toMatchObject({
+        totalTestCases: 1,
+        withExecutableRef: 0,
+        executableRefRate: '0/1 (0.0%)',
+      });
+      expect(output.issues.some((issue) => issue.code === 'E2E_COVERAGE_ERROR')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('queries, renders, allocates next IDs, diagnoses config, and initializes defaults', async () => {
     const root = await cliRepo('query');
 
@@ -309,7 +332,8 @@ describe('skills', () => {
     const issues = JSON.parse(validate.stdout) as Array<{ code: string; message: string }>;
 
     expect(validate.code).toBe(0);
-    expect(issues.some((issue) => issue.code === 'E2E-TRACE-004')).toBe(true);
+    // Markdown authority: E2E-TRACE-004 should be suppressed when chain_type is explicitly desktop_chain
+    expect(issues.some((issue) => issue.code === 'E2E-TRACE-004')).toBe(false);
   });
 
   it('resolves implementation context for a feature with --format json', async () => {

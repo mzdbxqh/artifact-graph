@@ -6,8 +6,10 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   assemblePacket,
+  computeE2eCoverageStats,
   DEFAULT_SCHEMA,
   formatContextMarkdown,
+  generateE2eRegistry,
   loadConfig,
   nextId,
   queryGraph,
@@ -96,13 +98,105 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         const graph = await scanArtifacts(root, config);
         const issues = validateGraph(graph, config);
         issues.push(...await validateScenarioPrdLinkIndex(root, graph));
-        issues.push(...await validateExecutableTraceability(root));
+        issues.push(...await validateExecutableTraceability(root, config));
+
+        // O2: E2E coverage stats
+        const includeCoverage = includes.has('e2e-coverage')
+          || config.e2e?.executable_ref_warning !== undefined
+          || config.e2e?.executable_ref_error !== undefined;
+        let coverageStats = null;
+        if (includeCoverage) {
+          const e2eConfig = config.e2e ?? {};
+          coverageStats = await computeE2eCoverageStats(graph, root, {
+            executableRefWarning: e2eConfig.executable_ref_warning,
+            executableRefError: e2eConfig.executable_ref_error,
+            reportUncoveredScenarios: e2eConfig.report_uncovered_scenarios,
+            reportUncoveredFeatures: e2eConfig.report_uncovered_features,
+            scenarioWaivers: e2eConfig.scenario_waivers,
+            featureWaivers: e2eConfig.feature_waivers,
+          });
+          // Convert threshold warnings/errors to validation issues
+          for (const msg of coverageStats.thresholdWarnings) {
+            issues.push({
+              code: 'E2E_COVERAGE_WARNING',
+              severity: 'warning',
+              message: msg,
+              path: 'e2e-coverage',
+              line: 1,
+            });
+          }
+          for (const msg of coverageStats.thresholdErrors) {
+            issues.push({
+              code: 'E2E_COVERAGE_ERROR',
+              severity: 'error',
+              message: msg,
+              path: 'e2e-coverage',
+              line: 1,
+            });
+          }
+        }
+
         if (parsed.flags.format === 'json') {
-          out(`${JSON.stringify(issues, null, 2)}\n`);
-        } else if (issues.length === 0) {
-          out('No validation issues\n');
+          if (coverageStats) {
+            const output: Record<string, unknown> = {
+              issues,
+              e2eCoverage: {
+                totalTestCases: coverageStats.totalTestCases,
+                withExecutableRef: coverageStats.withExecutableRef,
+                executableRefRate: coverageStats.executableRefRate,
+                statusBreakdown: coverageStats.statusBreakdown,
+                chainTypeBreakdown: coverageStats.chainTypeBreakdown,
+                uncoveredScenarios: coverageStats.uncoveredScenarios,
+                uncoveredFeatures: coverageStats.uncoveredFeatures,
+                acCoverageRateByFeature: coverageStats.acCoverageRateByFeature,
+                scenarioCoverage: coverageStats.scenarioCoverage,
+                featureCoverage: coverageStats.featureCoverage,
+              },
+            };
+            out(`${JSON.stringify(output, null, 2)}\n`);
+          } else {
+            out(`${JSON.stringify(issues, null, 2)}\n`);
+          }
         } else {
-          out(issues.map((issue) => `${issue.code} ${issue.path}:${issue.line} ${issue.message}`).join('\n') + '\n');
+          if (coverageStats) {
+            out(`E2E Coverage: ${coverageStats.executableRefRate} executable_ref\n`);
+            out(`  Status: ${JSON.stringify(coverageStats.statusBreakdown)}\n`);
+            out(`  Chain types: ${JSON.stringify(coverageStats.chainTypeBreakdown)}\n`);
+            if (coverageStats.uncoveredScenarios.length > 0) {
+              out(`  Uncovered scenarios (${coverageStats.uncoveredScenarios.length}): ${coverageStats.uncoveredScenarios.join(', ')}\n`);
+            }
+            if (coverageStats.uncoveredFeatures.length > 0) {
+              out(`  Uncovered features (${coverageStats.uncoveredFeatures.length}): ${coverageStats.uncoveredFeatures.join(', ')}\n`);
+            }
+            if (Object.keys(coverageStats.acCoverageRateByFeature).length > 0) {
+              out(`  AC coverage by feature:\n`);
+              for (const [feature, rate] of Object.entries(coverageStats.acCoverageRateByFeature)) {
+                out(`    ${feature}: ${rate.numerator}/${rate.denominator} (${(rate.rate * 100).toFixed(1)}%)\n`);
+              }
+            }
+            // Multi-dimensional coverage summary
+            const scenarioStats = Object.values(coverageStats.scenarioCoverage);
+            const featureStats = Object.values(coverageStats.featureCoverage);
+            if (scenarioStats.length > 0) {
+              const linked = scenarioStats.filter((s) => s.linked).length;
+              const acCovered = scenarioStats.filter((s) => s.acCovered).length;
+              const waived = scenarioStats.filter((s) => s.waived).length;
+              const verified = scenarioStats.filter((s) => s.verified).length;
+              out(`  Scenario coverage: linked=${linked}, acCovered=${acCovered}, waived=${waived}, verified=${verified}\n`);
+            }
+            if (featureStats.length > 0) {
+              const linked = featureStats.filter((s) => s.linked).length;
+              const acCovered = featureStats.filter((s) => s.acCovered).length;
+              const waived = featureStats.filter((s) => s.waived).length;
+              const verified = featureStats.filter((s) => s.verified).length;
+              out(`  Feature coverage: linked=${linked}, acCovered=${acCovered}, waived=${waived}, verified=${verified}\n`);
+            }
+          }
+          if (issues.length === 0) {
+            out('No validation issues\n');
+          } else {
+            out(issues.map((issue) => `${issue.code} ${issue.path}:${issue.line} ${issue.message}`).join('\n') + '\n');
+          }
         }
         return issues.some((issue) => issue.severity === 'error') && !parsed.flags['warning-only'] ? 1 : 0;
       }
@@ -707,7 +801,8 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
             err(`Invalid --format: "${parsed.flags.format}". Allowed values: json, markdown\n`);
             return 1;
           }
-          const result = await auditVersionLock(root, lockPath);
+          const config = await loadConfig(root);
+          const result = await auditVersionLock(root, lockPath, undefined, config);
           if (versionLockAuditFormat === 'json') {
             out(`${JSON.stringify(result, null, 2)}\n`);
           } else {
@@ -916,6 +1011,36 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         }
         return validationErrors.length === 0 ? 0 : 1;
       }
+      case 'generate-e2e-registry': {
+        const checkMode = parsed.flags.check === true;
+        const deterministic = checkMode || parsed.flags.deterministic === true;
+        const registry = await generateE2eRegistry(root, { deterministic });
+        const output = JSON.stringify(registry, null, 2) + '\n';
+        const outPath = typeof parsed.flags.out === 'string' ? parsed.flags.out : join(root, 'artifacts/tests/e2e/e2e-test-registry.json');
+        if (checkMode) {
+          // Check mode: compare with existing file, report drift
+          let existing = '';
+          try {
+            existing = await readFile(outPath, 'utf-8');
+          } catch {
+            err(`Check failed: ${outPath} does not exist or is not readable\n`);
+            return 1;
+          }
+          if (existing !== output) {
+            err(`Registry drift detected: ${outPath} differs from deterministic generation\n`);
+            return 1;
+          }
+          out(`Registry check passed: ${outPath} matches deterministic generation\n`);
+          return 0;
+        }
+        if (typeof parsed.flags.out === 'string') {
+          await writeFile(parsed.flags.out, output);
+          out(`Registry written to ${parsed.flags.out} (${registry.total_batches} batches, ${registry.total_test_cases} TCs)\n`);
+        } else {
+          out(output);
+        }
+        return 0;
+      }
       default:
         err(helpText());
         return 1;
@@ -989,7 +1114,7 @@ function helpText(): string {
 Commands:
   init
   scan
-  validate [--format json] [--warning-only] [--include scenario-prd-links]
+  validate [--format json] [--warning-only] [--include scenario-prd-links,e2e-coverage]
   query --from <code> [--format json]
   context (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json]
   packet (--target <type>:<id> | --feature <id> | --scenario <id> | --decision <id> | --design <id> | --e2e-test <id>) [--mode full|implementation] [--max-per-category <n>] [--format json|markdown] [--out <path>] [--no-validate]
@@ -1007,6 +1132,7 @@ Commands:
   render [--format mermaid]
   doctor [--format json|markdown]
   validate-review-result --file <path> [--format json]
+  generate-e2e-registry [--deterministic] [--out <path>] [--check]
 `;
 }
 

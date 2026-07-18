@@ -1432,7 +1432,7 @@ related_scenarios: [S-20]
     }
   });
 
-  it('skips E2E_DESKTOP_CHAIN_WARNING when chain_type is frontend_only or core_only', async () => {
+  it('skips E2E_DESKTOP_CHAIN_WARNING for canonical non-desktop chain types', async () => {
     const root = await e2eFixtureRepo('chain-type');
     try {
     await write(
@@ -1448,7 +1448,7 @@ related_scenarios: [S-20]
 
 # E2E 测试: chain_type 分类
 
-## TC-001: 前端显示组件（frontend_only）
+## TC-001: 前端显示组件（mock_playwright）
 
 **前置条件**:
 - 桌面应用已启动。
@@ -1463,11 +1463,11 @@ related_scenarios: [S-20]
 **覆盖场景**: S-20
 **覆盖功能**: D1(AC1)
 **优先级**: P0
-**chain_type**: frontend_only
+**chain_type**: mock_playwright
 
 ---
 
-## TC-002: CLI 核心规则测试（core_only）
+## TC-002: CLI 核心规则测试（core_e2e）
 
 **前置条件**:
 - CLI 已安装。
@@ -1482,7 +1482,7 @@ related_scenarios: [S-20]
 **覆盖场景**: S-20
 **覆盖功能**: D1(AC2)
 **优先级**: P0
-**chain_type**: core_only
+**chain_type**: core_e2e
 
 ---
 
@@ -1528,10 +1528,10 @@ related_scenarios: [S-20]
 
     const chainWarnings = issues.filter((issue) => issue.code === 'E2E_DESKTOP_CHAIN_WARNING');
 
-    // TC-001 (frontend_only) should NOT trigger warning
+    // TC-001 (mock_playwright) should NOT trigger warning
     expect(chainWarnings.find((issue) => issue.message.includes('TC-001'))).toBeUndefined();
 
-    // TC-002 (core_only) should NOT trigger warning
+    // TC-002 (core_e2e) should NOT trigger warning
     expect(chainWarnings.find((issue) => issue.message.includes('TC-002'))).toBeUndefined();
 
     // TC-003 (desktop_chain) should trigger warning (missing full chain keywords)
@@ -1773,6 +1773,50 @@ describe('consistent', () => {
     }
   });
 
+  it('resolves executable_ref through a configured nested runner without a product-specific root', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-generic-root-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+      await mkdir(join(root, 'vendor/app/tests/e2e'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:
+  runners:
+    - name: browser
+      kind: e2e
+      root: vendor/app/tests/e2e
+      include: ["*.spec.ts"]
+`);
+      await writeFile(join(root, 'artifacts/tests/e2e/test-generic.md'), `---
+test_batch: test-generic
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: generic runner root
+
+## TC-001: configured nested source root
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: none
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: tests/e2e/consistent.spec.ts::TS-001
+**chain_type**: desktop_chain
+`);
+      await writeFile(join(root, 'vendor/app/tests/e2e/consistent.spec.ts'), `// @e2e_test test-generic:TC-001
+test('TS-001: generic configured runner', () => {});
+`);
+
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.filter((item) => ['E2E-TRACE-001', 'E2E-TRACE-003'].includes(item.code))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('warns when desktop_chain TC points to mock_playwright test', async () => {
     const root = join(tmpdir(), `artifact-graph-e2e-trace-004-${Date.now()}`);
     try {
@@ -1823,10 +1867,8 @@ describe('mock skills', () => {
 
       const issues = await validateExecutableTraceability(root);
       const trace004 = issues.filter((issue) => issue.code === 'E2E-TRACE-004');
-      expect(trace004.length).toBeGreaterThanOrEqual(1);
-      expect(trace004[0].message).toContain('mock_playwright');
-      expect(trace004[0].node).toBe('test-trace-04:TC-001');
-      expect(trace004[0].line).toBe(11);
+      // Markdown authority: E2E-TRACE-004 should be suppressed when chain_type is explicitly desktop_chain
+      expect(trace004.length).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -1875,6 +1917,105 @@ related_scenarios: [S-20]
       expect(pending.length).toBe(1);
       expect(pending[0].message).toContain('pending executable_ref');
       expect(pending[0].node).toBe('test-trace-05:TC-001');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('warns E2E-DESKTOP-CHAIN-MISSING when desktop_chain TC has no executable_ref', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-desktop-chain-missing-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+
+      await writeFile(
+        join(root, 'artifacts/tests/e2e/test-desktop-chain-missing.md'),
+        `---
+test_batch: test-desktop-chain-missing
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: desktop chain missing
+
+## TC-001: desktop chain 缺失 executable_ref
+
+**前置条件**:
+- 桌面应用已启动。
+
+**测试步骤**:
+1. 执行操作。
+
+**后置清理**:
+- 无。
+
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**chain_type**: desktop_chain
+`,
+      );
+
+      const issues = await validateExecutableTraceability(root);
+      const missing = issues.filter((issue) => issue.code === 'E2E-DESKTOP-CHAIN-MISSING');
+      expect(missing.length).toBe(1);
+      expect(missing[0].message).toContain('has no executable_ref');
+      expect(missing[0].node).toBe('test-desktop-chain-missing:TC-001');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does NOT warn E2E-DESKTOP-CHAIN-MISSING when desktop_chain TC has executable_ref', async () => {
+    const root = join(tmpdir(), `artifact-graph-e2e-desktop-chain-not-missing-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'artifacts/tests/e2e'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages/desktop/e2e'), { recursive: true });
+
+      await writeFile(
+        join(root, 'heimdall/packages/desktop/e2e/chain.spec.ts'),
+        `// @tc test-desktop-chain-not-missing:TC-001 [desktop_chain]
+describe('chain', () => {
+  it('runs chain test', () => {});
+});
+`,
+      );
+
+      await writeFile(
+        join(root, 'artifacts/tests/e2e/test-desktop-chain-not-missing.md'),
+        `---
+test_batch: test-desktop-chain-not-missing
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E 测试: desktop chain not missing
+
+## TC-001: desktop chain 有 executable_ref
+
+**前置条件**:
+- 桌面应用已启动。
+
+**测试步骤**:
+1. 执行操作。
+
+**后置清理**:
+- 无。
+
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: heimdall/packages/desktop/e2e/chain.spec.ts
+**chain_type**: desktop_chain
+`,
+      );
+
+      const issues = await validateExecutableTraceability(root);
+      const missing = issues.filter((issue) => issue.code === 'E2E-DESKTOP-CHAIN-MISSING');
+      expect(missing.length).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -2222,8 +2363,8 @@ related_scenarios: [S-20]
       const issues = await validateExecutableTraceability(root);
       const trace004 = issues.filter((issue) => issue.code === 'E2E-TRACE-004');
       const trace006 = issues.filter((issue) => issue.code === 'E2E-TRACE-006');
-      expect(trace004.length).toBe(1);
-      expect(trace004[0].message).toContain('mock_playwright');
+      // Markdown authority: E2E-TRACE-004 should be suppressed when chain_type is explicitly desktop_chain
+      expect(trace004.length).toBe(0);
       expect(trace006.length).toBe(1);
       expect(trace006[0].message).toContain('partial desktop_chain coverage');
     } finally {
@@ -2665,8 +2806,8 @@ related_scenarios: [S-20]
       const issues = await validateExecutableTraceability(root);
       const trace004 = issues.filter((issue) => issue.code === 'E2E-TRACE-004');
       const trace006 = issues.filter((issue) => issue.code === 'E2E-TRACE-006');
-      expect(trace004.length).toBe(1);
-      expect(trace004[0].message).toContain('mock_playwright');
+      // Markdown authority: E2E-TRACE-004 should be suppressed when chain_type is explicitly desktop_chain
+      expect(trace004.length).toBe(0);
       expect(trace006.length).toBe(1);
       expect(trace006[0].message).toContain('missing valid desktop_chain or ui_sidecar_bridge + partial_rust');
     } finally {
@@ -8372,6 +8513,993 @@ status: active
 
       expect(graph.nodes.length).toBe(1000);
       expect(elapsed).toBeLessThan(2000);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('O1-O4: E2E coverage proof mechanism', () => {
+  it('validates TC status lifecycle — invalid status produces E2E_INVALID_TC_STATUS', async () => {
+    const root = await e2eFixtureRepo('tc-status');
+    try {
+      await write(
+        root,
+        'artifacts/tests/e2e/test-02.md',
+        `---
+test_batch: test-02
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E Test Invalid Status
+
+## TC-001: Bad status
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**status**: bogus_state
+`,
+      );
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph);
+      expect(issues).toContainEqual(expect.objectContaining({ code: 'E2E_INVALID_TC_STATUS' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('validates waived TC must have reason — E2E_WAIVED_NO_REASON', async () => {
+    const root = await e2eFixtureRepo('waived-no-reason');
+    try {
+      await write(
+        root,
+        'artifacts/tests/e2e/test-02.md',
+        `---
+test_batch: test-02
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E Test Waived
+
+## TC-001: Waived without reason
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**status**: waived
+`,
+      );
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph);
+      expect(issues).toContainEqual(expect.objectContaining({ code: 'E2E_WAIVED_NO_REASON' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('validates chain_type vocabulary — invalid produces E2E_INVALID_CHAIN_TYPE', async () => {
+    const root = await e2eFixtureRepo('chain-type-invalid');
+    try {
+      await write(
+        root,
+        'artifacts/tests/e2e/test-02.md',
+        `---
+test_batch: test-02
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E Test Bad Chain Type
+
+## TC-001: Invalid chain type
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**chain_type**: totally_invalid
+`,
+      );
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph);
+      expect(issues).toContainEqual(expect.objectContaining({ code: 'E2E_INVALID_CHAIN_TYPE' }));
+      expect(issues).not.toContainEqual(expect.objectContaining({ code: 'E2E_DEPRECATED_CHAIN_TYPE' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('validates deprecated chain_type aliases — core_only produces E2E_DEPRECATED_CHAIN_TYPE', async () => {
+    const root = await e2eFixtureRepo('chain-type-deprecated');
+    try {
+      await write(
+        root,
+        'artifacts/tests/e2e/test-02.md',
+        `---
+test_batch: test-02
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E Test Deprecated Chain Type
+
+## TC-001: Deprecated chain type
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**chain_type**: core_only
+`,
+      );
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph);
+      expect(issues).toContainEqual(expect.objectContaining({ code: 'E2E_DEPRECATED_CHAIN_TYPE' }));
+      expect(issues).not.toContainEqual(expect.objectContaining({ code: 'E2E_INVALID_CHAIN_TYPE' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('detects freetext ac_coverage_rate — E2E_AC_COVERAGE_RATE_FREETEXT', async () => {
+    const root = await e2eFixtureRepo('ac-rate-freetext');
+    try {
+      await write(
+        root,
+        'artifacts/tests/e2e/test-02.md',
+        `---
+test_batch: test-02
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E Test Freetext Rate
+
+## TC-001: Freetext rate
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**ac_coverage_rate**: 100%
+`,
+      );
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const issues = validateGraph(graph);
+      expect(issues).toContainEqual(expect.objectContaining({ code: 'E2E_AC_COVERAGE_RATE_FREETEXT' }));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('computeE2eCoverageStats produces correct baseline stats', async () => {
+    const { computeE2eCoverageStats } = await import('../src/index.js');
+    const root = await e2eFixtureRepo('coverage-stats');
+    try {
+      const graph = await scanArtifacts(root, await loadConfig(root));
+      const stats = await computeE2eCoverageStats(graph, root);
+      expect(stats.totalTestCases).toBe(1);
+      expect(stats.withExecutableRef).toBe(0);
+      expect(stats.executableRefRate).toBe('0/1 (0.0%)');
+      expect(stats.statusBreakdown).toEqual({ created: 1 });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('E2E-TRACE-004 respects Markdown authority for explicit desktop_chain', async () => {
+    const { validateExecutableTraceability } = await import('../src/index.js');
+    const root = await e2eFixtureRepo('trace-004-authority');
+    try {
+      await write(
+        root,
+        'artifacts/tests/e2e/test-02.md',
+        `---
+test_batch: test-02
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# E2E Test Authority
+
+## TC-001: Desktop chain with mock source
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: heimdall/packages/desktop/e2e/skills.e2e.spec.ts::TS-001
+**chain_type**: desktop_chain
+`,
+      );
+      await write(
+        root,
+        'heimdall/packages/desktop/e2e/skills.e2e.spec.ts',
+        `// @e2e_test test-02:TC-001 [mock_playwright]
+describe('skills', () => {
+  test('TS-001: mock import', async () => {});
+});
+`,
+      );
+      const issues = await validateExecutableTraceability(root);
+      const trace004 = issues.filter((i) => i.code === 'E2E-TRACE-004');
+      // Markdown authority: E2E-TRACE-004 should be suppressed entirely
+      expect(trace004.length).toBe(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Item 1: fail-closed e2e config validation', () => {
+  it('rejects threshold > 1', async () => {
+    const root = join(tmpdir(), `ag-config-thresh-hi-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  executable_ref_warning: 1.5\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/Must be a number between 0 and 1/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects threshold < 0', async () => {
+    const root = join(tmpdir(), `ag-config-thresh-lo-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  executable_ref_error: -0.1\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/Must be a number between 0 and 1/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects runner with absolute root', async () => {
+    const root = join(tmpdir(), `ag-config-abs-root-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "pw"\n      root: "/absolute/path"\n      include: ["**/*.spec.ts"]\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/must not be an absolute path/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects runner root with .. segments', async () => {
+    const root = join(tmpdir(), `ag-config-dotdot-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "pw"\n      root: "../outside"\n      include: ["**/*.spec.ts"]\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/must not contain "\.\."/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects runner with empty include', async () => {
+    const root = join(tmpdir(), `ag-config-empty-include-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "pw"\n      root: "."\n      include: []\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/must be a non-empty array/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects waiver without reason', async () => {
+    const root = join(tmpdir(), `ag-config-waiver-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  scenario_waivers:\n    - id: "S-99"\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/Must be \{id, reason\}/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects waiver with empty reason', async () => {
+    const root = join(tmpdir(), `ag-config-waiver-empty-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  feature_waivers:\n    - id: "F1"\n      reason: ""\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/reason must be a non-empty string/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects runner with invalid kind', async () => {
+    const root = join(tmpdir(), `ag-config-bad-kind-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "pw"\n      root: "."\n      include: ["**/*.spec.ts"]\n      kind: "smoke"\n`);
+      await expect(loadConfig(root)).rejects.toThrow(/Must be unit, integration, or e2e/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('default runners is empty for backward compatibility', () => {
+    expect(DEFAULT_SCHEMA.e2e?.runners).toEqual([]);
+  });
+
+  it('accepts valid e2e config with all fields', async () => {
+    const root = join(tmpdir(), `ag-config-valid-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  executable_ref_warning: 0.5\n  executable_ref_error: 0.8\n  runners:\n    - name: "vitest"\n      root: "."\n      include: ["**/*.test.ts"]\n      exclude: ["**/node_modules/**"]\n      testIgnore: ["**/__skip__/**"]\n      kind: "unit"\n  scenario_waivers:\n    - id: "S-99"\n      reason: "deferred to Q3"\n  feature_waivers:\n    - id: "F1"\n      reason: "out of scope"\n`);
+      const config = await loadConfig(root);
+      expect(config.e2e?.runners).toHaveLength(1);
+      expect(config.e2e?.runners?.[0].kind).toBe('unit');
+      expect(config.e2e?.scenario_waivers?.[0].reason).toBe('deferred to Q3');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Item 4: four checklist rules pass/fail', () => {
+  it('desktop-chain-missing: TC without explicit chain_type and mock source reports E2E-TRACE-004', async () => {
+    const root = await e2eFixtureRepo('dc-missing-fail');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-dc.md', `---
+test_batch: test-dc
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Desktop chain missing
+
+## TC-001: No explicit chain_type
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: heimdall/packages/desktop/e2e/fake.e2e.spec.ts::TS-001
+`);
+      await write(root, 'heimdall/packages/desktop/e2e/fake.e2e.spec.ts', `// @e2e_test test-dc:TC-001 [mock_playwright]
+describe('fake', () => {
+  test('TS-001: uses mock', async () => {});
+});
+`);
+      const issues = await validateExecutableTraceability(root);
+      // No explicit chain_type → defaults to desktop_chain, mock_playwright source → E2E-TRACE-004
+      expect(issues.some((i) => i.code === 'E2E-TRACE-004')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('desktop-chain-missing: TC with [e2e] level and desktop_chain does NOT report E2E-TRACE-004', async () => {
+    const root = await e2eFixtureRepo('dc-missing-pass');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-dc.md', `---
+test_batch: test-dc
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Desktop chain real
+
+## TC-001: Real chain
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**chain_type**: desktop_chain
+**executable_ref**: heimdall/packages/desktop/e2e/real.e2e.spec.ts::TS-001
+`);
+      await write(root, 'heimdall/packages/desktop/e2e/real.e2e.spec.ts', `// @e2e_test test-dc:TC-001 [e2e]
+describe('real', () => {
+  test('TS-001: real e2e', async () => {});
+});
+`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.filter((i) => i.code === 'E2E-TRACE-004')).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executable-ref-target-missing: nonexistent ref target reports finding', async () => {
+    const root = await e2eFixtureRepo('eref-missing');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-eref.md', `---
+test_batch: test-eref
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Executable ref missing
+
+## TC-001: Ref target missing
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: heimdall/packages/desktop/e2e/nonexistent.e2e.spec.ts::TS-001
+**chain_type**: desktop_chain
+`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.some((i) =>
+        i.code === 'E2E-TRACE-001' || i.message.includes('not found') || i.message.includes('does not exist')
+      )).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('executable-ref-target-missing: existing ref target does not report target-missing', async () => {
+    const root = await e2eFixtureRepo('eref-pass');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-eref.md', `---
+test_batch: test-eref
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Executable ref exists
+
+## TC-001: Ref target exists
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: heimdall/packages/desktop/e2e/exists.e2e.spec.ts::TS-001
+**chain_type**: desktop_chain
+`);
+      await write(root, 'heimdall/packages/desktop/e2e/exists.e2e.spec.ts', `// @e2e_test test-eref:TC-001 [e2e]
+describe('exists', () => {
+  test('TS-001: exists', async () => {});
+});
+`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.filter((i) =>
+        i.code === 'E2E-TRACE-001' || (i.message.includes('not found') && i.message.includes('executable'))
+      )).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('mock-playwright-for-desktop-chain: implicit desktop_chain with mock source reports E2E-TRACE-004', async () => {
+    const root = await e2eFixtureRepo('mock-pw-fail');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-mock.md', `---
+test_batch: test-mock
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Mock playwright
+
+## TC-001: Mock evidence (no explicit chain_type)
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**executable_ref**: heimdall/packages/desktop/e2e/mock.e2e.spec.ts::TS-001
+`);
+      await write(root, 'heimdall/packages/desktop/e2e/mock.e2e.spec.ts', `// @e2e_test test-mock:TC-001 [mock_playwright]
+describe('mock', () => {
+  test('TS-001: mock', async () => {});
+});
+`);
+      const issues = await validateExecutableTraceability(root);
+      // No explicit chain_type → defaults to desktop_chain, mock source → E2E-TRACE-004
+      expect(issues.some((i) => i.code === 'E2E-TRACE-004')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('mock-playwright-for-desktop-chain: declared mock_playwright chain_type does NOT report E2E-TRACE-004', async () => {
+    const root = await e2eFixtureRepo('mock-pw-pass');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-mock.md', `---
+test_batch: test-mock
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Mock playwright non-desktop
+
+## TC-001: Mock ok for non-desktop
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**chain_type**: mock_playwright
+**executable_ref**: heimdall/packages/desktop/e2e/mock.e2e.spec.ts::TS-001
+`);
+      await write(root, 'heimdall/packages/desktop/e2e/mock.e2e.spec.ts', `// @e2e_test test-mock:TC-001 [mock_playwright]
+describe('mock', () => {
+  test('TS-001: mock', async () => {});
+});
+`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.filter((i) => i.code === 'E2E-TRACE-004')).toHaveLength(0);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Item 5: uncoveredFeatures uses AC coverage, waiver and verified semantics', () => {
+  it('feature with verifies edge but no ac_coverage is still uncovered', async () => {
+    const root = await e2eFixtureRepo('feat-edge-no-ac');
+    try {
+      await write(root, 'artifacts/prd/features/D3-unlinked.md', `---
+id: D3
+title: Unlinked feature
+status: done
+scenarios: [S-20]
+---
+
+# D3: Unlinked feature
+
+## 验收标准
+
+1. Some AC.
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const { computeE2eCoverageStats } = await import('../src/index.js');
+      const stats = await computeE2eCoverageStats(graph, root);
+      expect(stats.uncoveredFeatures).toContain('D3');
+      expect(stats.featureCoverage['D3']?.acCovered).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('waiver removes feature from uncovered but keeps waived=true, verified=false', async () => {
+    const root = await e2eFixtureRepo('feat-waiver');
+    try {
+      await write(root, 'artifacts/prd/features/D3-unlinked.md', `---
+id: D3
+title: Waived feature
+status: done
+scenarios: [S-20]
+---
+
+# D3: Waived feature
+
+## 验收标准
+
+1. Some AC.
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const { computeE2eCoverageStats } = await import('../src/index.js');
+      const stats = await computeE2eCoverageStats(graph, root, {
+        featureWaivers: [{ id: 'D3', reason: 'out of scope for MVP' }],
+      });
+      expect(stats.uncoveredFeatures).not.toContain('D3');
+      expect(stats.featureCoverage['D3']?.waived).toBe(true);
+      expect(stats.featureCoverage['D3']?.verified).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('verified requires non-pending executable_ref AND active e2e runner', async () => {
+    const root = await e2eFixtureRepo('feat-verified');
+    try {
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  test:
+    paths: ["heimdall/packages/**/*.test.ts"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  e2e_registry:
+    paths: ["artifacts/tests/e2e/e2e-test-registry.json"]
+e2e:
+  runners:
+    - name: "playwright"
+      root: "heimdall"
+      include: ["**/*.e2e.spec.ts"]
+      kind: "e2e"
+statuses: [planned, active, done, deprecated]
+`);
+      await write(root, 'artifacts/tests/e2e/test-verified.md', `---
+test_batch: test-verified
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Verified TC
+
+## TC-001: Fully verified
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**status**: verified
+**executable_ref**: heimdall/packages/desktop/e2e/verified.e2e.spec.ts::TS-001
+**chain_type**: desktop_chain
+`);
+      await write(root, 'heimdall/packages/desktop/e2e/verified.e2e.spec.ts', `// @e2e_test test-verified:TC-001 [e2e]
+describe('verified', () => {
+  test('TS-001: verified', async () => {});
+});
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const { computeE2eCoverageStats } = await import('../src/index.js');
+      const stats = await computeE2eCoverageStats(graph, root);
+      expect(stats.featureCoverage['D1']?.verified).toBe(true);
+      expect(stats.featureCoverage['D1']?.acCovered).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('verified=false when status=verified but executable_ref is pending', async () => {
+    const root = await e2eFixtureRepo('feat-verified-pending');
+    try {
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  design:
+    paths: ["artifacts/design/**/*.md"]
+  test:
+    paths: ["heimdall/packages/**/*.test.ts"]
+  e2e_test:
+    paths: ["artifacts/tests/e2e/*.md"]
+  e2e_registry:
+    paths: ["artifacts/tests/e2e/e2e-test-registry.json"]
+e2e:
+  runners:
+    - name: "playwright"
+      root: "heimdall"
+      include: ["**/*.e2e.spec.ts"]
+      kind: "e2e"
+statuses: [planned, active, done, deprecated]
+`);
+      await write(root, 'artifacts/tests/e2e/test-pending.md', `---
+test_batch: test-pending
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Pending TC
+
+## TC-001: Pending ref
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**status**: verified
+**executable_ref**: pending — not yet implemented
+**chain_type**: desktop_chain
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const { computeE2eCoverageStats } = await import('../src/index.js');
+      const stats = await computeE2eCoverageStats(graph, root);
+      expect(stats.featureCoverage['D1']?.verified).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('scenario waiver removes from uncovered but keeps waived=true', async () => {
+    const root = await e2eFixtureRepo('scenario-waiver');
+    try {
+      await write(root, 'artifacts/scenarios/batch-waived.md', `## S-99: Waived scenario
+
+**关联功能**: D1
+`);
+      const config = await loadConfig(root);
+      const graph = await scanArtifacts(root, config);
+      const { computeE2eCoverageStats } = await import('../src/index.js');
+      const stats = await computeE2eCoverageStats(graph, root, {
+        scenarioWaivers: [{ id: 'S-99', reason: 'covered manually' }],
+      });
+      expect(stats.uncoveredScenarios).not.toContain('S-99');
+      expect(stats.scenarioCoverage['S-99']?.waived).toBe(true);
+      expect(stats.scenarioCoverage['S-99']?.verified).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Item 6: registry frontmatter blocked, --check, idempotent', () => {
+  it('registry with fixes_block in frontmatter produces batch status=blocked', async () => {
+    const root = await e2eFixtureRepo('registry-blocked');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-blocked.md', `---
+test_batch: test-blocked
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+fixes_block: "no test file — requires manual E2E setup"
+---
+
+# Blocked batch
+
+## TC-001: Blocked TC
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+`);
+      const { generateE2eRegistry } = await import('../src/index.js');
+      const registry = await generateE2eRegistry(root, { deterministic: true });
+      const batch = registry.batches.find((b) => b.batch_id === 'test-blocked');
+      expect(batch).toBeDefined();
+      expect(batch!.status).toBe('blocked');
+      expect(batch!.blocking_reasons).toBeDefined();
+      expect(batch!.blocking_reasons!['TC-001']).toContain('no test file');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('registry with fixes_block: "no E2E" also produces batch status=blocked', async () => {
+    const root = await e2eFixtureRepo('registry-blocked-noe2e');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-noe2e.md', `---
+test_batch: test-noe2e
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+fixes_block: "no E2E test infrastructure available"
+---
+
+# No E2E batch
+
+## TC-001: No E2E
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+`);
+      const { generateE2eRegistry } = await import('../src/index.js');
+      const registry = await generateE2eRegistry(root, { deterministic: true });
+      const batch = registry.batches.find((b) => b.batch_id === 'test-noe2e');
+      expect(batch!.status).toBe('blocked');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('double deterministic generation produces byte-identical output', async () => {
+    const root = await e2eFixtureRepo('registry-idempotent');
+    try {
+      const { generateE2eRegistry } = await import('../src/index.js');
+      const first = await generateE2eRegistry(root, { deterministic: true });
+      const second = await generateE2eRegistry(root, { deterministic: true });
+      expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('registry --check mode detects drift when file differs', async () => {
+    const root = await e2eFixtureRepo('registry-check');
+    try {
+      const { generateE2eRegistry } = await import('../src/index.js');
+      const registry = await generateE2eRegistry(root, { deterministic: true });
+      const outPath = join(root, 'artifacts/tests/e2e/e2e-test-registry.json');
+      await writeFile(outPath, JSON.stringify({ stale: true }));
+      const { runCli } = await import('../src/cli.js');
+      let stderr = '';
+      const code = await runCli(['generate-e2e-registry', '--root', root, '--check'], {
+        cwd: root,
+        stderr: (chunk) => { stderr += chunk; },
+      });
+      expect(code).toBe(1);
+      expect(stderr).toContain('drift');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('registry --check mode passes when file matches deterministic generation', async () => {
+    const root = await e2eFixtureRepo('registry-check-pass');
+    try {
+      const { generateE2eRegistry } = await import('../src/index.js');
+      const registry = await generateE2eRegistry(root, { deterministic: true });
+      const outPath = join(root, 'artifacts/tests/e2e/e2e-test-registry.json');
+      await writeFile(outPath, JSON.stringify(registry, null, 2) + '\n');
+      const { runCli } = await import('../src/cli.js');
+      let stdout = '';
+      const code = await runCli(['generate-e2e-registry', '--root', root, '--check'], {
+        cwd: root,
+        stdout: (chunk) => { stdout += chunk; },
+      });
+      expect(code).toBe(0);
+      expect(stdout).toContain('check passed');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('test-33/test-35 equivalent: TC with no executable_ref and desktop_chain has blocking_reasons', async () => {
+    const root = await e2eFixtureRepo('registry-t33-t35');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-blocked-tc.md', `---
+test_batch: test-blocked-tc
+scope: D1
+ac_coverage:
+  D1: [AC1]
+related_scenarios: [S-20]
+---
+
+# Blocked TC batch
+
+## TC-001: No executable ref
+
+**前置条件**: ready
+**测试步骤**: run
+**后置清理**: clean
+**覆盖场景**: S-20
+**覆盖功能**: D1(AC1)
+**优先级**: P0
+**chain_type**: desktop_chain
+`);
+      const { generateE2eRegistry } = await import('../src/index.js');
+      const registry = await generateE2eRegistry(root, { deterministic: true });
+      const batch = registry.batches.find((b) => b.batch_id === 'test-blocked-tc');
+      expect(batch).toBeDefined();
+      expect(batch!.status).toBe('blocked');
+      expect(batch!.blocking_reasons).toBeDefined();
+      expect(batch!.blocking_reasons!['TC-001']).toBeDefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('E2E proof hardening completion cases', () => {
+  it('rejects malformed e2e sections and non-array waivers', async () => {
+    const root = join(tmpdir(), `ag-config-malformed-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), 'e2e: enabled\n');
+      await expect(loadConfig(root)).rejects.toThrow(/Invalid e2e: must be an object/);
+      await writeFile(join(root, 'artifact-graph.config.yaml'), 'e2e:\n  scenario_waivers: S-20\n');
+      await expect(loadConfig(root)).rejects.toThrow(/scenario_waivers.*must be an array/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('deep-merges e2e defaults and defaults runner kind to e2e', async () => {
+    const root = join(tmpdir(), `ag-config-merge-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  executable_ref_warning: 0.5\n  runners:\n    - name: default-kind\n      root: .\n      include: ["**/*.spec.ts"]\n`);
+      const config = await loadConfig(root);
+      expect(config.e2e?.report_uncovered_scenarios).toBe(true);
+      expect(config.e2e?.report_uncovered_features).toBe(true);
+      expect(config.e2e?.runners?.[0].kind).toBe('e2e');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('unit-test-not-e2e reports a ref accepted only by a unit runner', async () => {
+    const root = await e2eFixtureRepo('unit-runner-fail');
+    try {
+      await write(root, 'artifact-graph.config.yaml', `e2e:\n  runners:\n    - name: unit\n      kind: unit\n      root: .\n      include: ["heimdall/**/*.test.ts"]\n    - name: playwright\n      kind: e2e\n      root: .\n      include: ["heimdall/**/*.e2e.spec.ts"]\n`);
+      await write(root, 'artifacts/tests/e2e/test-unit-ref.md', `---\ntest_batch: test-unit-ref\nscope: D1\nac_coverage:\n  D1: [AC1]\nrelated_scenarios: [S-20]\n---\n\n# Unit ref\n\n## TC-001: Unit only\n\n**前置条件**: ready\n**测试步骤**: run\n**后置清理**: clean\n**覆盖场景**: S-20\n**覆盖功能**: D1(AC1)\n**优先级**: P0\n**chain_type**: core_e2e\n**executable_ref**: heimdall/packages/core/unit.test.ts::TS-001\n`);
+      await write(root, 'heimdall/packages/core/unit.test.ts', `// @e2e_test test-unit-ref:TC-001 [core_e2e]\ntest('TS-001: unit', () => {});\n`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.filter((item) => item.code === 'E2E-UNIT-TEST-NOT-E2E')).toHaveLength(1);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('unit-test-not-e2e passes a ref accepted by an e2e runner', async () => {
+    const root = await e2eFixtureRepo('unit-runner-pass');
+    try {
+      await write(root, 'artifact-graph.config.yaml', `e2e:\n  runners:\n    - name: browser-e2e\n      kind: e2e\n      root: .\n      include: ["heimdall/**/*.test.ts"]\n`);
+      await write(root, 'artifacts/tests/e2e/test-e2e-ref.md', `---\ntest_batch: test-e2e-ref\nscope: D1\nac_coverage:\n  D1: [AC1]\nrelated_scenarios: [S-20]\n---\n\n# E2E ref\n\n## TC-001: E2E runner\n\n**前置条件**: ready\n**测试步骤**: run\n**后置清理**: clean\n**覆盖场景**: S-20\n**覆盖功能**: D1(AC1)\n**优先级**: P0\n**chain_type**: core_e2e\n**executable_ref**: heimdall/packages/core/e2e.test.ts::TS-001\n`);
+      await write(root, 'heimdall/packages/core/e2e.test.ts', `// @e2e_test test-e2e-ref:TC-001 [core_e2e]\ntest('TS-001: e2e', () => {});\n`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.some((item) => item.code === 'E2E-UNIT-TEST-NOT-E2E')).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('invalid chain_type does not suppress a mock source conflict', async () => {
+    const root = await e2eFixtureRepo('invalid-chain-mock');
+    try {
+      await write(root, 'artifacts/tests/e2e/test-invalid-chain.md', `---\ntest_batch: test-invalid-chain\nscope: D1\nac_coverage:\n  D1: [AC1]\nrelated_scenarios: [S-20]\n---\n\n# Invalid chain\n\n## TC-001: Invalid chain\n\n**前置条件**: ready\n**测试步骤**: run\n**后置清理**: clean\n**覆盖场景**: S-20\n**覆盖功能**: D1(AC1)\n**优先级**: P0\n**chain_type**: invented_chain\n**executable_ref**: heimdall/packages/desktop/e2e/mock.e2e.spec.ts::TS-001\n`);
+      await write(root, 'heimdall/packages/desktop/e2e/mock.e2e.spec.ts', `// @e2e_test test-invalid-chain:TC-001 [mock_playwright]\ntest('TS-001: mock', () => {});\n`);
+      const issues = await validateExecutableTraceability(root);
+      expect(issues.some((item) => item.code === 'E2E-TRACE-004')).toBe(true);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

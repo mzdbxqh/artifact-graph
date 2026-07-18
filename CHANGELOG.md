@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 0.6.0
+
+### Added
+
+- **E2E coverage proof mechanism**: `validate --include e2e-coverage` now outputs executable_ref
+  coverage statistics (total TCs, with executable_ref, rate), status breakdown, chain_type breakdown,
+  uncovered scenarios, and uncovered features. JSON and human-readable formats supported.
+  - Configurable thresholds via `artifact-graph.config.yaml` `e2e` section:
+    `executable_ref_warning`, `executable_ref_error`, `report_uncovered_scenarios`,
+    `report_uncovered_features`, `scenario_waivers`, `feature_waivers`.
+  - Threshold violations produce `E2E_COVERAGE_WARNING` / `E2E_COVERAGE_ERROR` findings.
+
+- **TC status lifecycle validation**: TCs with invalid `status` values produce `E2E_INVALID_TC_STATUS`.
+  `waived` status requires non-empty `waived_reason` (`E2E_WAIVED_NO_REASON`).
+
+- **chain_type vocabulary validation**: Invalid chain_type produces `E2E_INVALID_CHAIN_TYPE`.
+  Deprecated aliases `core_only` → `core_e2e`, `frontend_only` → `mock_playwright` produce
+  `E2E_DEPRECATED_CHAIN_TYPE` migration warnings.
+
+- **ac_coverage_rate freetext detection**: Handwritten percentages produce
+  `E2E_AC_COVERAGE_RATE_FREETEXT` — this field must be computed, not manually entered.
+
+- **Deterministic checklist rules**:
+  - `E2E-UNIT-TEST-NOT-E2E`: executable_ref pointing to `.test.ts` instead of `.spec.ts`.
+  - Version-lock liveness: E2E spec files with no active `@e2e_test`/`@tc` annotations produce
+    `orphan_lock` liveness warnings.
+
+- **`generate-e2e-registry` command**: Deterministic, idempotent E2E registry generation from
+  Markdown test files. `--deterministic` flag sets `generated_at` to epoch for diff checks.
+  `--out <path>` writes output to file.
+
+- **E2E-TRACE-004 Markdown authority**: When a TC explicitly declares `chain_type: desktop_chain`,
+  conflicts with source-level `mock_playwright` annotations are downgraded to info (per
+  artifact-chain-spec §5.2: Markdown side is authoritative).
+
+### Changed
+
+- **`validate --format json`** output is now wrapped in `{ issues, e2eCoverage }` when
+  `--include e2e-coverage` is specified. Without `--include e2e-coverage`, output remains a raw
+  issues array (backward compatible).
+
 ## 0.5.0
 
 ### Added

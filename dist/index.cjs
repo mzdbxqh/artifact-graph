@@ -50,12 +50,14 @@ __export(index_exports, {
   buildGraph: () => buildGraph,
   buildVersionIndex: () => buildVersionIndex,
   collectChangedPaths: () => collectChangedPaths,
+  computeE2eCoverageStats: () => computeE2eCoverageStats,
   dirname: () => import_node_path6.dirname,
   discoverAndAuditPackets: () => discoverAndAuditPackets,
   discoverTargets: () => discoverTargets,
   doctorArtifactChain: () => doctorArtifactChain,
   extname: () => import_node_path6.extname,
   formatContextMarkdown: () => formatContextMarkdown,
+  generateE2eRegistry: () => generateE2eRegistry,
   getArtifactTypeMetadata: () => getArtifactTypeMetadata,
   getTargetArtifactTypes: () => getTargetArtifactTypes,
   installManagedHookBlock: () => installManagedHookBlock,
@@ -99,7 +101,7 @@ module.exports = __toCommonJS(index_exports);
 var import_better_sqlite3 = __toESM(require("better-sqlite3"), 1);
 var import_gray_matter = __toESM(require("gray-matter"), 1);
 var import_js_yaml = __toESM(require("js-yaml"), 1);
-var import_node_fs3 = require("fs");
+var import_node_fs4 = require("fs");
 var import_promises5 = require("fs/promises");
 var import_node_path6 = require("path");
 
@@ -354,6 +356,45 @@ function validatePacketMarkdown(markdown) {
   }
   const hasError = issues.some((i) => i.severity === "error");
   return { ok: !hasError, issues };
+}
+
+// src/glob-matcher.ts
+function matchesRunnerGlob(filePath, pattern) {
+  const normalizedPath = normalizeGlobValue(filePath);
+  const normalizedPattern = normalizeGlobValue(pattern);
+  let expression = "^";
+  for (let index = 0; index < normalizedPattern.length; index += 1) {
+    const character = normalizedPattern[index];
+    if (character === "*") {
+      if (normalizedPattern[index + 1] === "*") {
+        while (normalizedPattern[index + 1] === "*") {
+          index += 1;
+        }
+        if (normalizedPattern[index + 1] === "/") {
+          index += 1;
+          expression += "(?:[^/]+/)*";
+        } else {
+          expression += ".*";
+        }
+      } else {
+        expression += "[^/]*";
+      }
+      continue;
+    }
+    if (character === "?") {
+      expression += "[^/]";
+      continue;
+    }
+    expression += escapeRegexCharacter(character);
+  }
+  expression += "$";
+  return new RegExp(expression).test(normalizedPath);
+}
+function normalizeGlobValue(value) {
+  return value.replace(/\\/g, "/").replace(/^\.\//, "");
+}
+function escapeRegexCharacter(character) {
+  return "\\^$+?.()|{}[]".includes(character) ? String.fromCharCode(92) + character : character;
 }
 
 // src/target-selector.ts
@@ -1373,6 +1414,7 @@ function validatePacketPrompt(prompt) {
 
 // src/versioned-traceability.ts
 var import_node_crypto = require("crypto");
+var import_node_fs = require("fs");
 var import_promises2 = require("fs/promises");
 var import_node_path2 = require("path");
 var VERSION_LOCK_PATH = "artifacts/traceability-version-lock.json";
@@ -1413,13 +1455,15 @@ async function buildVersionIndex(root, graph) {
     edges: sortBy(edges, (edge2) => `${edge2.from}	${edge2.to}	${edge2.kind}	${edge2.sourcePath}	${edge2.sourceLine}`)
   };
 }
-async function auditVersionLock(root, lockPath = VERSION_LOCK_PATH, graph) {
+async function auditVersionLock(root, lockPath = VERSION_LOCK_PATH, graph, config) {
   const index = await buildVersionIndex(root, graph);
+  const schema = config ?? await loadConfig(root);
   const safeLockPath = normalizeRelativePath(root, lockPath);
   const lock = await readVersionLock(root, safeLockPath);
   const nodeByArtifact = new Map(index.nodes.map((node) => [`${node.type}:${node.id}`, node]));
   const nodeByPath = new Map(index.nodes.map((node) => [node.path, node]));
   const currentEdges = implementationEdges(index);
+  const lockableEdges = await lockableImplementationEdges(root, index, schema);
   const currentEdgeIds = new Set(currentEdges.map((edge2) => edge2.edgeId));
   const issues = [];
   let fresh = 0;
@@ -1507,8 +1551,29 @@ async function auditVersionLock(root, lockPath = VERSION_LOCK_PATH, graph) {
       issues.push(...entryIssues);
     }
   }
+  const livenessCache = /* @__PURE__ */ new Map();
+  for (const entry of lock.locks) {
+    if (entry.kind !== "verifies") continue;
+    const sourcePath = entry.source.path;
+    const fullSourcePath = (0, import_node_path2.join)(root, sourcePath);
+    if (!(0, import_node_fs.existsSync)(fullSourcePath)) continue;
+    let liveness = livenessCache.get(sourcePath);
+    if (liveness === void 0) {
+      liveness = await getTestFileRunnerLiveness(root, sourcePath, schema);
+      livenessCache.set(sourcePath, liveness);
+    }
+    if (liveness === "inactive") {
+      issues.push({
+        status: "orphan_lock",
+        edgeId: entry.edgeId,
+        message: `Liveness: ${sourcePath} is not active in any configured runner \u2014 locked verifies edges may reference dead tests`,
+        artifact: entry.artifact,
+        source: entry.source
+      });
+    }
+  }
   const reportedMissingLocks = /* @__PURE__ */ new Set();
-  for (const edge2 of currentEdges) {
+  for (const edge2 of lockableEdges) {
     const edgeId = edge2.edgeId;
     if (!lock.locks.some((entry) => entry.edgeId === edgeId)) {
       if (reportedMissingLocks.has(edgeId)) {
@@ -1590,6 +1655,7 @@ async function updateVersionLock(root, options) {
 }
 async function bootstrapVersionLock(root, options = {}) {
   const index = await buildVersionIndex(root);
+  const config = await loadConfig(root);
   const lockPath = normalizeRelativePath(root, options.lockPath ?? VERSION_LOCK_PATH);
   if (!options.force) {
     const existing = await readVersionLock(root, lockPath);
@@ -1599,7 +1665,7 @@ async function bootstrapVersionLock(root, options = {}) {
   }
   const nodeByUid = new Map(index.nodes.map((node) => [node.uid, node]));
   const entries = /* @__PURE__ */ new Map();
-  for (const edge2 of implementationEdges(index)) {
+  for (const edge2 of await lockableImplementationEdges(root, index, config)) {
     const source = nodeByUid.get(edge2.from);
     const artifact = nodeByUid.get(edge2.to);
     if (!source || !artifact) {
@@ -1634,10 +1700,11 @@ async function refreshVersionLock(root, options = {}) {
     throw new Error("Changed-only version-lock refresh includes artifact-graph.config.yaml and requires --all");
   }
   const index = await buildVersionIndex(root);
+  const config = await loadConfig(root);
   const lock = await readVersionLock(root, lockPath);
   const nodeByUid = new Map(index.nodes.map((node) => [node.uid, node]));
   const nodeByPath = new Map(index.nodes.map((node) => [node.path, node]));
-  const currentImplementationEdges = implementationEdges(index);
+  const currentImplementationEdges = await lockableImplementationEdges(root, index, config);
   const currentEdgePairs = new Set(currentImplementationEdges.map((edge2) => `${edge2.from}	${edge2.to}`));
   const currentEntries = /* @__PURE__ */ new Map();
   const changedPathSet = new Set(changedPaths);
@@ -1712,7 +1779,7 @@ async function refreshVersionLock(root, options = {}) {
     locks: sortBy([...nextLocks.values()], (item) => item.edgeId)
   };
   await writeVersionLock(root, lockPath, next);
-  const postAudit = await auditVersionLock(root, lockPath);
+  const postAudit = await auditVersionLock(root, lockPath, void 0, config);
   return {
     schemaVersion: "1.0",
     root,
@@ -1731,7 +1798,8 @@ async function refreshVersionLock(root, options = {}) {
 async function traceVersion(root, target, lockPath = VERSION_LOCK_PATH) {
   const index = await buildVersionIndex(root);
   const safeLockPath = normalizeRelativePath(root, lockPath);
-  const audit = await auditVersionLock(root, safeLockPath);
+  const config = await loadConfig(root);
+  const audit = await auditVersionLock(root, safeLockPath, void 0, config);
   const targetUid = parseTarget(target);
   const lock = await readVersionLock(root, safeLockPath);
   const targetNode = index.nodes.find((node) => node.uid === targetUid);
@@ -1967,6 +2035,28 @@ function implementationEdges(index) {
     };
   });
 }
+async function lockableImplementationEdges(root, index, config) {
+  const edges = implementationEdges(index);
+  const nodesByUid = new Map(index.nodes.map((node) => [node.uid, node]));
+  const livenessByPath = /* @__PURE__ */ new Map();
+  const result = [];
+  for (const edge2 of edges) {
+    const source = nodesByUid.get(edge2.from);
+    if (source?.sourceKind !== "test") {
+      result.push(edge2);
+      continue;
+    }
+    let liveness = livenessByPath.get(source.path);
+    if (liveness === void 0) {
+      liveness = await getTestFileRunnerLiveness(root, source.path, config);
+      livenessByPath.set(source.path, liveness);
+    }
+    if (liveness !== "inactive") {
+      result.push(edge2);
+    }
+  }
+  return result;
+}
 function lockRefFromNode(node) {
   return {
     type: node.type,
@@ -2079,13 +2169,60 @@ function normalizeRelativePath(root, path) {
 function sortBy(items, keyFn) {
   return [...items].sort((left, right) => keyFn(left).localeCompare(keyFn(right)));
 }
+async function getTestFileRunnerLiveness(root, filePath, config) {
+  const schema = config ?? await loadConfig(root);
+  const runners = schema.e2e?.runners ?? [];
+  if (runners.length === 0) {
+    if (!/e2e/i.test(filePath) && !/\.e2e\./i.test(filePath)) {
+      return "active";
+    }
+    const fullSourcePath = (0, import_node_path2.join)(root, filePath);
+    if (!(0, import_node_fs.existsSync)(fullSourcePath)) return "inactive";
+    try {
+      const content = await (0, import_promises2.readFile)(fullSourcePath, "utf-8");
+      return /\/\/!?\s*@(?:e2e_test|tc)\s+/.test(content) ? "active" : "inactive";
+    } catch {
+      return "inactive";
+    }
+  }
+  let inRunnerScope = false;
+  for (const runner of runners) {
+    if (!isFileIncludedByRunner(filePath, runner)) continue;
+    inRunnerScope = true;
+    const isActive = await isFileActiveInRunner(root, filePath, runner);
+    if (isActive) return "active";
+  }
+  return inRunnerScope ? "inactive" : "unscoped";
+}
+function isFileIncludedByRunner(filePath, runner) {
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const runnerRoot = runner.root.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "") || ".";
+  if (runnerRoot !== "." && !normalizedPath.startsWith(`${runnerRoot}/`)) return false;
+  const relativePath = runnerRoot === "." ? normalizedPath : normalizedPath.slice(runnerRoot.length + 1);
+  return runner.include.some((pattern) => matchesRunnerGlob(relativePath, pattern));
+}
+async function isFileActiveInRunner(root, filePath, runner) {
+  if (!isFileIncludedByRunner(filePath, runner)) return false;
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const runnerRoot = runner.root.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "") || ".";
+  const relativePath = runnerRoot === "." ? normalizedPath : normalizedPath.slice(runnerRoot.length).replace(/^\//, "");
+  const matchesExclude = (runner.exclude ?? []).some(
+    (pattern) => matchesRunnerGlob(relativePath, pattern)
+  );
+  if (matchesExclude) return false;
+  const matchesTestIgnore = (runner.testIgnore ?? []).some(
+    (pattern) => matchesRunnerGlob(relativePath, pattern)
+  );
+  if (matchesTestIgnore) return false;
+  return true;
+}
 function sortUnique(items) {
   return [...new Set(items)].sort((left, right) => left.localeCompare(right));
 }
 
 // src/cli-resolver.ts
 var import_node_child_process = require("child_process");
-var import_node_fs = require("fs");
+var import_node_fs2 = require("fs");
 var import_promises3 = require("fs/promises");
 var import_node_path3 = require("path");
 var import_node_util = require("util");
@@ -2223,7 +2360,7 @@ ${maybe.stderr ?? ""}`;
 }
 async function pathExists(path) {
   try {
-    await (0, import_promises3.access)(path, import_node_fs.constants.R_OK);
+    await (0, import_promises3.access)(path, import_node_fs2.constants.R_OK);
     return true;
   } catch {
     return false;
@@ -2322,7 +2459,7 @@ async function resolveGitHookPath(root, hookName) {
 }
 
 // src/hook-installer.ts
-var import_node_fs2 = require("fs");
+var import_node_fs3 = require("fs");
 var import_node_crypto2 = require("crypto");
 var import_promises4 = require("fs/promises");
 var import_node_path5 = require("path");
@@ -2636,7 +2773,7 @@ async function readHookSnapshot(hookPath) {
     }
     let handle;
     try {
-      handle = await (0, import_promises4.open)(hookPath, import_node_fs2.constants.O_RDONLY | (import_node_fs2.constants.O_NOFOLLOW ?? 0));
+      handle = await (0, import_promises4.open)(hookPath, import_node_fs3.constants.O_RDONLY | (import_node_fs3.constants.O_NOFOLLOW ?? 0));
       const opened = await handle.stat({ bigint: true });
       if (opened.dev !== metadata.dev || opened.ino !== metadata.ino) {
         await handle.close();
@@ -3142,7 +3279,12 @@ var DEFAULT_SCHEMA = {
   allowedEdges: [],
   forbiddenEdges: [{ from: "scenario", to: "entity", kind: "references" }],
   statuses: ["planned", "active", "done", "deprecated"],
-  idRanges: {}
+  idRanges: {},
+  e2e: {
+    report_uncovered_scenarios: true,
+    report_uncovered_features: true,
+    runners: []
+  }
 };
 async function loadConfig(root) {
   const configPath = (0, import_node_path6.join)(root, "artifact-graph.config.yaml");
@@ -3161,7 +3303,21 @@ async function loadConfig(root) {
       `Invalid context.universal_baseline: ${JSON.stringify(ub)}. Must be boolean (true or false).`
     );
   }
-  return {
+  if (parsed.e2e !== void 0) {
+    if (typeof parsed.e2e !== "object" || parsed.e2e === null || Array.isArray(parsed.e2e)) {
+      throw new Error("Invalid e2e: must be an object.");
+    }
+    validateE2eConfig(parsed.e2e);
+  }
+  const mergedE2e = parsed.e2e === void 0 ? DEFAULT_SCHEMA.e2e : {
+    ...DEFAULT_SCHEMA.e2e,
+    ...parsed.e2e,
+    runners: (parsed.e2e.runners ?? DEFAULT_SCHEMA.e2e?.runners ?? []).map((runner) => ({
+      kind: "e2e",
+      ...runner
+    }))
+  };
+  const merged = {
     ...DEFAULT_SCHEMA,
     ...parsed,
     types: mergeArtifactTypes(DEFAULT_SCHEMA.types, parsed.types),
@@ -3170,8 +3326,101 @@ async function loadConfig(root) {
     allowedEdges: parsed.allowedEdges ?? DEFAULT_SCHEMA.allowedEdges,
     forbiddenEdges: parsed.forbiddenEdges ?? DEFAULT_SCHEMA.forbiddenEdges,
     statuses: parsed.statuses ?? DEFAULT_SCHEMA.statuses,
-    idRanges: mergeRecord(DEFAULT_SCHEMA.idRanges, parsed.idRanges)
+    idRanges: mergeRecord(DEFAULT_SCHEMA.idRanges, parsed.idRanges),
+    e2e: mergedE2e
   };
+  return merged;
+}
+function validateE2eConfig(e2e) {
+  for (const field of ["report_uncovered_scenarios", "report_uncovered_features"]) {
+    if (e2e[field] !== void 0 && typeof e2e[field] !== "boolean") {
+      throw new Error(`Invalid e2e.${field}: must be boolean.`);
+    }
+  }
+  if (e2e.executable_ref_warning !== void 0) {
+    if (typeof e2e.executable_ref_warning !== "number" || e2e.executable_ref_warning < 0 || e2e.executable_ref_warning > 1) {
+      throw new Error(`Invalid e2e.executable_ref_warning: ${JSON.stringify(e2e.executable_ref_warning)}. Must be a number between 0 and 1.`);
+    }
+  }
+  if (e2e.executable_ref_error !== void 0) {
+    if (typeof e2e.executable_ref_error !== "number" || e2e.executable_ref_error < 0 || e2e.executable_ref_error > 1) {
+      throw new Error(`Invalid e2e.executable_ref_error: ${JSON.stringify(e2e.executable_ref_error)}. Must be a number between 0 and 1.`);
+    }
+  }
+  const validateWaivers = (waivers, field) => {
+    if (waivers === void 0) return;
+    if (!Array.isArray(waivers)) {
+      throw new Error(`Invalid ${field}: must be an array of {id, reason} objects.`);
+    }
+    for (const w of waivers) {
+      if (typeof w !== "object" || w === null || !("id" in w) || !("reason" in w)) {
+        throw new Error(`Invalid ${field} entry: ${JSON.stringify(w)}. Must be {id, reason} object.`);
+      }
+      if (typeof w.id !== "string" || !w.id.trim()) {
+        throw new Error(`Invalid ${field} entry: id must be a non-empty string. Got: ${JSON.stringify(w.id)}`);
+      }
+      if (typeof w.reason !== "string" || !w.reason.trim()) {
+        throw new Error(`Invalid ${field} entry: reason must be a non-empty string. Got: ${JSON.stringify(w.reason)}`);
+      }
+    }
+  };
+  validateWaivers(e2e.scenario_waivers, "e2e.scenario_waivers");
+  validateWaivers(e2e.feature_waivers, "e2e.feature_waivers");
+  if (e2e.runners !== void 0) {
+    if (!Array.isArray(e2e.runners)) {
+      throw new Error(`Invalid e2e.runners: must be an array.`);
+    }
+    for (const runner of e2e.runners) {
+      if (typeof runner !== "object" || runner === null) {
+        throw new Error(`Invalid e2e.runners entry: must be an object.`);
+      }
+      if (typeof runner.name !== "string" || !runner.name.trim()) {
+        throw new Error(`Invalid e2e.runners entry: name must be a non-empty string.`);
+      }
+      if (typeof runner.root !== "string" || !runner.root.trim()) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].root: must be a non-empty string.`);
+      }
+      if ((0, import_node_path6.isAbsolute)(runner.root)) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].root: "${runner.root}" must not be an absolute path.`);
+      }
+      if (runner.root.replace(/\\/g, "/").split("/").includes("..")) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].root: "${runner.root}" must not contain ".." segments.`);
+      }
+      if (!Array.isArray(runner.include) || runner.include.length === 0) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].include: must be a non-empty array of glob patterns.`);
+      }
+      for (const pattern of runner.include) {
+        if (typeof pattern !== "string" || !pattern.trim()) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].include: pattern must be a non-empty string.`);
+        }
+      }
+      if (runner.exclude !== void 0) {
+        if (!Array.isArray(runner.exclude)) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].exclude: must be an array.`);
+        }
+        for (const pattern of runner.exclude) {
+          if (typeof pattern !== "string" || !pattern.trim()) {
+            throw new Error(`Invalid e2e.runners[${runner.name}].exclude: pattern must be a non-empty string.`);
+          }
+        }
+      }
+      if (runner.testIgnore !== void 0) {
+        if (!Array.isArray(runner.testIgnore)) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].testIgnore: must be an array.`);
+        }
+        for (const pattern of runner.testIgnore) {
+          if (typeof pattern !== "string" || !pattern.trim()) {
+            throw new Error(`Invalid e2e.runners[${runner.name}].testIgnore: pattern must be a non-empty string.`);
+          }
+        }
+      }
+      if (runner.kind !== void 0) {
+        if (!["unit", "integration", "e2e"].includes(runner.kind)) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].kind: "${runner.kind}". Must be unit, integration, or e2e.`);
+        }
+      }
+    }
+  }
 }
 function buildGraph(nodes, edges, diagnostics = [], root) {
   const graphNodes = nodes.map((node) => ({ ...node, uid: toUid(node.type, node.code) }));
@@ -5320,6 +5569,29 @@ function validateE2eTests(graph) {
         issues.push(issue("E2E_AC_UNKNOWN", `${node.uid} references unknown AC ${reference.feature}(${reference.ac})`, node.path, node.line, { node: node.uid, severity: "warning" }));
       }
     }
+    const tcStatus = String(fields["status"] ?? "").trim().toLowerCase();
+    if (tcStatus && !VALID_TC_STATUSES.has(tcStatus)) {
+      issues.push(issue("E2E_INVALID_TC_STATUS", `${node.uid} has invalid TC status "${tcStatus}"; allowed: ${[...VALID_TC_STATUSES].join(", ")}`, node.path, node.line, { node: node.uid, severity: "warning" }));
+    }
+    if (tcStatus === "waived") {
+      const reason = String(fields["waived_reason"] ?? "").trim();
+      if (!reason) {
+        issues.push(issue("E2E_WAIVED_NO_REASON", `${node.uid} has status "waived" but no waived_reason`, node.path, node.line, { node: node.uid, severity: "warning" }));
+      }
+    }
+    const rawChainType = String(fields["chain_type"] ?? "").trim();
+    const chainType = rawChainType.toLowerCase();
+    if (rawChainType) {
+      if (!VALID_CHAIN_TYPES.has(chainType) && !(chainType in DEPRECATED_CHAIN_TYPE_ALIASES)) {
+        issues.push(issue("E2E_INVALID_CHAIN_TYPE", `${node.uid} has invalid chain_type "${rawChainType}"; allowed: ${[...VALID_CHAIN_TYPES].join(", ")}`, node.path, node.line, { node: node.uid, severity: "warning" }));
+      } else if (chainType in DEPRECATED_CHAIN_TYPE_ALIASES) {
+        issues.push(issue("E2E_DEPRECATED_CHAIN_TYPE", `${node.uid} uses deprecated chain_type "${rawChainType}"; migrate to "${DEPRECATED_CHAIN_TYPE_ALIASES[chainType]}"`, node.path, node.line, { node: node.uid, severity: "warning" }));
+      }
+    }
+    const rawAcCoverageRate = String(fields["ac_coverage_rate"] ?? "").trim();
+    if (rawAcCoverageRate) {
+      issues.push(issue("E2E_AC_COVERAGE_RATE_FREETEXT", `${node.uid} has handwritten ac_coverage_rate "${rawAcCoverageRate}"; this field must be derived from ac_coverage and the feature acceptance-criteria inventory`, node.path, node.line, { node: node.uid, severity: "warning" }));
+    }
     if (needsDesktopChainWarning(node)) {
       issues.push(issue("E2E_DESKTOP_CHAIN_WARNING", `${node.uid} appears desktop-related but does not cover the full React/UI -> Tauri/IPC -> Node sidecar/JSON Lines -> core/engine -> SQLite/report data \u771F\u5B9E\u684C\u9762\u94FE\u8DEF`, node.path, node.line, { node: node.uid, severity: "warning" }));
     }
@@ -5378,10 +5650,10 @@ function validateE2eRegistry(graph) {
   }
   return issues;
 }
-async function validateExecutableTraceability(root) {
+async function validateExecutableTraceability(root, config) {
   const issues = [];
+  const schema = config ?? await loadConfig(root);
   const e2eDir = (0, import_node_path6.join)(root, "artifacts", "tests", "e2e");
-  const specPatterns = ["heimdall/**/*.spec.ts", "heimdall/**/*.e2e.spec.ts"];
   let e2eFiles;
   try {
     e2eFiles = (await (0, import_promises5.readdir)(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => (0, import_node_path6.join)(e2eDir, name));
@@ -5424,9 +5696,16 @@ async function validateExecutableTraceability(root) {
   }
   const allFiles = await walk(root);
   const specFiles = /* @__PURE__ */ new Set();
-  for (const pattern of specPatterns) {
+  const configuredRunners = schema.e2e?.runners ?? [];
+  if (configuredRunners.length > 0) {
     for (const file of allFiles) {
-      if (matchesPattern(file, pattern)) {
+      if (configuredRunners.some((runner) => isRunnerIncludeCandidate(file, runner))) {
+        specFiles.add(file);
+      }
+    }
+  } else {
+    for (const file of allFiles) {
+      if (/\.(?:e2e\.)?spec\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) {
         specFiles.add(file);
       }
     }
@@ -5497,11 +5776,20 @@ async function validateExecutableTraceability(root) {
     const refEntries = parseExecutableRefLines(ref);
     const validFiles = [];
     for (const entry of refEntries) {
-      const normalizedRefFile = entry.file.startsWith("heimdall/") ? entry.file : `heimdall/${entry.file}`;
-      const fileExists = specFiles.has(normalizedRefFile);
+      const normalizedRefFile = resolveExecutableRefFile(entry.file, allFiles);
+      const fileExists = normalizedRefFile !== void 0 && specFiles.has(normalizedRefFile);
       if (!fileExists) {
         issues.push(issue("E2E-TRACE-001", `executable_ref target file not found: ${entry.file}`, path, line, { node: tcKey, severity: "warning" }));
         continue;
+      }
+      const runners = schema.e2e?.runners ?? [];
+      if (runners.length > 0) {
+        const acceptingRunners = await getAcceptingRunners(root, normalizedRefFile, runners);
+        const hasE2eRunner = acceptingRunners.some((r) => r.kind === "e2e" || r.kind === "integration");
+        const hasUnitRunner = acceptingRunners.some((r) => r.kind === "unit");
+        if (hasUnitRunner && !hasE2eRunner && acceptingRunners.length > 0) {
+          issues.push(issue("E2E-UNIT-TEST-NOT-E2E", `executable_ref target ${entry.file} is only accepted by unit runner(s) [${acceptingRunners.map((r) => r.name).join(", ")}], not by any e2e/integration runner`, path, line, { node: tcKey, severity: "warning" }));
+        }
       }
       if (entry.testId) {
         let content;
@@ -5517,10 +5805,7 @@ async function validateExecutableTraceability(root) {
         }
       }
       const annotationsForTc = refToSource.get(tcKey);
-      const hasAnnotationInFile = annotationsForTc?.some((ann) => {
-        const normalizedAnnFile = ann.file.startsWith("heimdall/") ? ann.file : `heimdall/${ann.file}`;
-        return normalizedAnnFile === normalizedRefFile;
-      }) ?? false;
+      const hasAnnotationInFile = annotationsForTc?.some((ann) => ann.file === normalizedRefFile) ?? false;
       if (!hasAnnotationInFile) {
         issues.push(issue("E2E-TRACE-003", `executable_ref target ${entry.file} has no E2E trace annotation ${tcKey}`, path, line, { node: tcKey, severity: "warning" }));
         continue;
@@ -5558,24 +5843,37 @@ async function validateExecutableTraceability(root) {
       if (matchesAnyRef) {
         continue;
       }
-      const primaryRef = refEntries[0];
-      const normalizedPrimary = primaryRef?.file.startsWith("heimdall/") ? primaryRef?.file : `heimdall/${primaryRef?.file ?? ""}`;
       const detail = `file: MD refs=[${refEntries.map((e) => e.file).join(", ")}] vs source=${ann.file}`;
       issues.push(issue("E2E-TRACE-003", `executable_ref \u2194 E2E trace annotation mismatch for ${tcKey}: ${detail}`, path, line, { node: tcKey, severity: "warning" }));
     }
   }
-  for (const [tcKey, { chainType, path, line }] of mdToRef) {
-    if (!isDesktopChainType(chainType)) {
+  for (const [tcKey, { chainType, path, line }] of allMdTcInfo) {
+    const tcFields = tcKeyToFields.get(tcKey);
+    const explicitChainType = String(tcFields?.["chain_type"] ?? "").trim().toLowerCase();
+    if (explicitChainType !== "desktop_chain") {
       continue;
     }
+    if (!mdToRef.has(tcKey)) {
+      issues.push(issue("E2E-DESKTOP-CHAIN-MISSING", `desktop_chain TC ${tcKey} has no executable_ref`, path, line, { node: tcKey, severity: "warning" }));
+    }
+  }
+  for (const [tcKey, { chainType, path, line }] of mdToRef) {
+    const normalizedDeclaredChainType = chainType.trim().toLowerCase();
+    const hasLegalNonDesktopDeclaration = normalizedDeclaredChainType.length > 0 && VALID_CHAIN_TYPES.has(normalizedDeclaredChainType) && normalizedDeclaredChainType !== "desktop_chain";
+    if (hasLegalNonDesktopDeclaration) continue;
     const validFiles = new Set(tcValidRefFiles.get(tcKey) ?? []);
     const sourceAnnotations = refToSource.get(tcKey);
     if (!sourceAnnotations) {
       continue;
     }
+    const tcFields = tcKeyToFields.get(tcKey);
+    const explicitChainType = String(tcFields?.["chain_type"] ?? "").trim().toLowerCase();
+    const hasExplicitDesktopChain = explicitChainType === "desktop_chain";
+    if (hasExplicitDesktopChain) {
+      continue;
+    }
     for (const ann of sourceAnnotations) {
-      const normalizedAnnFile = ann.file.startsWith("heimdall/") ? ann.file : `heimdall/${ann.file}`;
-      if (!validFiles.has(normalizedAnnFile)) {
+      if (!validFiles.has(ann.file)) {
         continue;
       }
       if (ann.level === "mock_playwright") {
@@ -5601,10 +5899,7 @@ async function validateExecutableTraceability(root) {
       continue;
     }
     const validFiles = new Set(tcValidRefFiles.get(tcKey) ?? []);
-    const sourceAnnotations = refToSource.get(tcKey)?.filter((ann) => {
-      const normalized = ann.file.startsWith("heimdall/") ? ann.file : `heimdall/${ann.file}`;
-      return validFiles.has(normalized);
-    });
+    const sourceAnnotations = refToSource.get(tcKey)?.filter((ann) => validFiles.has(ann.file));
     const hasDesktopChain = sourceAnnotations?.some((ann) => ann.level === "desktop_chain") ?? false;
     const hasBridge = sourceAnnotations?.some((ann) => ann.level === "ui_sidecar_bridge") ?? false;
     if (isComplete) {
@@ -5613,7 +5908,7 @@ async function validateExecutableTraceability(root) {
       if (hasDesktopChain) {
         hasValidEvidence = true;
       } else if (hasBridge) {
-        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root);
+        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root, allFiles);
         if (partialResult.hasValidPartialRust) {
           hasValidEvidence = true;
         } else {
@@ -5653,7 +5948,7 @@ async function validateExecutableTraceability(root) {
       }
       let partialDetail = "";
       if (hasBridge) {
-        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root);
+        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root, allFiles);
         if (partialResult.hasValidPartialRust) {
           continue;
         }
@@ -5669,6 +5964,287 @@ async function validateExecutableTraceability(root) {
     }
   }
   return issues;
+}
+async function computeE2eCoverageStats(graph, root, thresholds = {}) {
+  const e2eNodes = graph.nodes.filter((n) => n.type === "e2e_test" && n.attrs?.fileLevelOnly !== true);
+  const totalTestCases = e2eNodes.length;
+  let withExecutableRef = 0;
+  const statusBreakdown = {};
+  const chainTypeBreakdown = {};
+  const e2eDir = (0, import_node_path6.join)(root, "artifacts", "tests", "e2e");
+  const tcFieldsMap = /* @__PURE__ */ new Map();
+  let e2eFiles;
+  try {
+    e2eFiles = (await (0, import_promises5.readdir)(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => (0, import_node_path6.join)(e2eDir, name));
+  } catch {
+    e2eFiles = [];
+  }
+  for (const filePath of e2eFiles) {
+    const raw = await (0, import_promises5.readFile)(filePath, "utf-8");
+    const lines = raw.split(/\r?\n/);
+    const tcStarts = [];
+    lines.forEach((line, index) => {
+      const match = /^#{2,3}\s+(TC-\d+[a-z]?)\s*[:：]?\s*.*$/.exec(line);
+      if (match) {
+        tcStarts.push({ id: match[1], index });
+      }
+    });
+    const parsed = (0, import_gray_matter.default)(raw);
+    const batch = String(parsed.data.test_batch ?? (0, import_node_path6.basename)(filePath, (0, import_node_path6.extname)(filePath))).trim();
+    for (let i = 0; i < tcStarts.length; i++) {
+      const start = tcStarts[i];
+      const end = tcStarts[i + 1]?.index ?? lines.length;
+      const block = lines.slice(start.index, end);
+      const fields = extractE2eTcFields(block);
+      tcFieldsMap.set(`${batch}:${start.id}`, fields);
+    }
+  }
+  for (const node of e2eNodes) {
+    const tcKey = node.code;
+    const fields = tcFieldsMap.get(tcKey) ?? asRecord(node.attrs?.tcFields);
+    const execRef = String(fields["executable_ref"] ?? "").trim();
+    if (execRef && !isPendingExecutableRef(execRef)) {
+      withExecutableRef++;
+    }
+    const status = String(fields["status"] ?? "created").trim().toLowerCase();
+    statusBreakdown[status] = (statusBreakdown[status] ?? 0) + 1;
+    const chainType = String(fields["chain_type"] ?? "").trim().toLowerCase() || "unspecified";
+    chainTypeBreakdown[chainType] = (chainTypeBreakdown[chainType] ?? 0) + 1;
+  }
+  const executableRefRate = totalTestCases > 0 ? `${withExecutableRef}/${totalTestCases} (${(withExecutableRef / totalTestCases * 100).toFixed(1)}%)` : "0/0";
+  const scenarioNodes = graph.nodes.filter((n) => n.type === "scenario");
+  const featureNodes = graph.nodes.filter((n) => n.type === "feature");
+  const linkedScenarios = /* @__PURE__ */ new Set();
+  const linkedFeatures = /* @__PURE__ */ new Set();
+  const acCoveredScenarios = /* @__PURE__ */ new Set();
+  const acCoveredFeatures = /* @__PURE__ */ new Set();
+  const verifiedScenarios = /* @__PURE__ */ new Set();
+  const verifiedFeatures = /* @__PURE__ */ new Set();
+  for (const edge2 of graph.edges) {
+    if (edge2.kind === "verifies" && edge2.from.startsWith("e2e_test:")) {
+      if (edge2.to.startsWith("scenario:")) {
+        linkedScenarios.add(edge2.to.replace("scenario:", ""));
+      }
+      if (edge2.to.startsWith("feature:")) {
+        linkedFeatures.add(edge2.to.replace("feature:", ""));
+      }
+    }
+  }
+  for (const node of e2eNodes) {
+    const fields = tcFieldsMap.get(node.code) ?? asRecord(node.attrs?.tcFields);
+    const acCoverage = asRecord(fields["ac_coverage"] ?? node.attrs?.ac_coverage);
+    for (const feature of Object.keys(acCoverage)) {
+      acCoveredFeatures.add(feature);
+    }
+    const relatedScenarios = toArray(fields["related_scenarios"] ?? node.attrs?.related_scenarios).map(String);
+    for (const scenario of relatedScenarios) {
+      acCoveredScenarios.add(scenario);
+    }
+  }
+  const runners = (await loadConfig(root)).e2e?.runners ?? [];
+  const allProjectFiles = await walk(root);
+  for (const node of e2eNodes) {
+    const fields = tcFieldsMap.get(node.code) ?? asRecord(node.attrs?.tcFields);
+    const status = String(fields["status"] ?? "").trim().toLowerCase();
+    const execRef = String(fields["executable_ref"] ?? "").trim();
+    if (status !== "verified") continue;
+    if (!execRef || isPendingExecutableRef(execRef)) continue;
+    if (runners.length === 0) continue;
+    let hasActiveE2eRef = false;
+    for (const entry of parseExecutableRefLines(execRef)) {
+      const normalized = resolveExecutableRefFile(entry.file, allProjectFiles);
+      if (!normalized || !(0, import_node_fs4.existsSync)((0, import_node_path6.join)(root, normalized))) continue;
+      const accepting = await getAcceptingRunners(root, normalized, runners);
+      if (accepting.some((runner) => runner.kind === "e2e")) {
+        hasActiveE2eRef = true;
+        break;
+      }
+    }
+    if (!hasActiveE2eRef) continue;
+    const relatedScenarios = toArray(fields["related_scenarios"] ?? node.attrs?.related_scenarios).map(String);
+    for (const scenario of relatedScenarios) {
+      verifiedScenarios.add(scenario);
+    }
+    const acCoverage = asRecord(fields["ac_coverage"] ?? node.attrs?.ac_coverage);
+    for (const feature of Object.keys(acCoverage)) {
+      verifiedFeatures.add(feature);
+    }
+  }
+  const scenarioWaivers = new Set((thresholds.scenarioWaivers ?? []).map((w) => w.id));
+  const featureWaivers = new Set((thresholds.featureWaivers ?? []).map((w) => w.id));
+  const uncoveredScenarios = scenarioNodes.map((n) => n.code).filter((code) => !linkedScenarios.has(code) && !scenarioWaivers.has(code));
+  const uncoveredFeatures = featureNodes.map((n) => n.code).filter((code) => !acCoveredFeatures.has(code) && !featureWaivers.has(code));
+  const scenarioCoverage = {};
+  for (const node of scenarioNodes) {
+    scenarioCoverage[node.code] = {
+      linked: linkedScenarios.has(node.code),
+      acCovered: acCoveredScenarios.has(node.code),
+      waived: scenarioWaivers.has(node.code),
+      verified: !scenarioWaivers.has(node.code) && verifiedScenarios.has(node.code)
+    };
+  }
+  const featureCoverage = {};
+  for (const node of featureNodes) {
+    featureCoverage[node.code] = {
+      linked: linkedFeatures.has(node.code),
+      acCovered: acCoveredFeatures.has(node.code),
+      waived: featureWaivers.has(node.code),
+      verified: !featureWaivers.has(node.code) && verifiedFeatures.has(node.code)
+    };
+  }
+  const thresholdWarnings = [];
+  const thresholdErrors = [];
+  const warningRate = thresholds.executableRefWarning;
+  const errorRate = thresholds.executableRefError;
+  const actualRate = totalTestCases > 0 ? withExecutableRef / totalTestCases : 1;
+  if (warningRate !== void 0 && actualRate < warningRate) {
+    thresholdWarnings.push(`executable_ref coverage ${executableRefRate} < warning threshold ${(warningRate * 100).toFixed(0)}%`);
+  }
+  if (errorRate !== void 0 && actualRate < errorRate) {
+    thresholdErrors.push(`executable_ref coverage ${executableRefRate} < error threshold ${(errorRate * 100).toFixed(0)}%`);
+  }
+  if (thresholds.reportUncoveredScenarios !== false && uncoveredScenarios.length > 0) {
+    thresholdWarnings.push(`${uncoveredScenarios.length} scenario(s) have no E2E coverage: ${uncoveredScenarios.join(", ")}`);
+  }
+  if (thresholds.reportUncoveredFeatures !== false && uncoveredFeatures.length > 0) {
+    thresholdWarnings.push(`${uncoveredFeatures.length} feature(s) have no E2E coverage: ${uncoveredFeatures.join(", ")}`);
+  }
+  const acCoverageRateByFeature = {};
+  const featureAcMap = /* @__PURE__ */ new Map();
+  for (const node of featureNodes) {
+    const acs = parseAcceptanceCriteria(await (0, import_promises5.readFile)((0, import_node_path6.join)(root, node.path), "utf-8"));
+    featureAcMap.set(node.code, new Set(acs));
+  }
+  const coveredAcByFeature = /* @__PURE__ */ new Map();
+  for (const node of e2eNodes) {
+    const fields = tcFieldsMap.get(node.code) ?? asRecord(node.attrs?.tcFields);
+    const acCoverage = asRecord(fields["ac_coverage"] ?? node.attrs?.ac_coverage);
+    for (const [feature, acs] of Object.entries(acCoverage)) {
+      const existing = coveredAcByFeature.get(feature) ?? /* @__PURE__ */ new Set();
+      for (const ac of toArray(acs)) {
+        existing.add(String(ac));
+      }
+      coveredAcByFeature.set(feature, existing);
+    }
+  }
+  for (const [feature, allAcs] of featureAcMap) {
+    const denominator = allAcs.size;
+    if (denominator === 0) continue;
+    const coveredAcs = coveredAcByFeature.get(feature) ?? /* @__PURE__ */ new Set();
+    const numerator = [...coveredAcs].filter((ac) => allAcs.has(ac)).length;
+    acCoverageRateByFeature[feature] = {
+      numerator,
+      denominator,
+      rate: denominator > 0 ? numerator / denominator : 0
+    };
+  }
+  return {
+    totalTestCases,
+    withExecutableRef,
+    executableRefRate,
+    statusBreakdown,
+    chainTypeBreakdown,
+    uncoveredScenarios,
+    uncoveredFeatures,
+    thresholdWarnings,
+    thresholdErrors,
+    acCoverageRateByFeature,
+    scenarioCoverage,
+    featureCoverage
+  };
+}
+async function generateE2eRegistry(root, opts) {
+  const e2eDir = (0, import_node_path6.join)(root, "artifacts", "tests", "e2e");
+  let files;
+  try {
+    files = (await (0, import_promises5.readdir)(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).sort();
+  } catch {
+    return {
+      registry_version: "1.0",
+      generated_at: opts?.deterministic ? "1970-01-01T00:00:00.000Z" : (/* @__PURE__ */ new Date()).toISOString(),
+      total_batches: 0,
+      total_test_cases: 0,
+      batches: []
+    };
+  }
+  const batches = [];
+  let totalTestCases = 0;
+  for (const file of files) {
+    const filePath = (0, import_node_path6.join)(e2eDir, file);
+    const raw = await (0, import_promises5.readFile)(filePath, "utf-8");
+    const parsed = (0, import_gray_matter.default)(raw);
+    const data = parsed.data;
+    const batch = String(data.test_batch ?? (0, import_node_path6.basename)(file, (0, import_node_path6.extname)(file))).trim();
+    const relPath = `artifacts/tests/e2e/${file}`;
+    const scope = String(data.scope ?? "").trim();
+    const acCoverage = normalizeAcCoverageForRegistry(data.ac_coverage);
+    const relatedScenarios = toArray(data.related_scenarios).map(String).filter(Boolean);
+    const lines = raw.split(/\r?\n/);
+    const tcStarts = [];
+    lines.forEach((line, index) => {
+      const match = /^#{2,3}\s+(TC-\d+[a-z]?)\s*[:：]?\s*.*$/.exec(line);
+      if (match) {
+        tcStarts.push({ id: match[1], index });
+      }
+    });
+    const statusSummary = {};
+    const blockingReasons = {};
+    const frontmatterFixesBlock = String(data.fixes_block ?? "").trim();
+    if (frontmatterFixesBlock && /no\s+(test\s+file|e2e)/i.test(frontmatterFixesBlock)) {
+      for (const tc of tcStarts) {
+        blockingReasons[tc.id] = frontmatterFixesBlock;
+      }
+    }
+    for (const start of tcStarts) {
+      const end = tcStarts[tcStarts.indexOf(start) + 1]?.index ?? lines.length;
+      const block = lines.slice(start.index, end);
+      const fields = extractE2eTcFields(block);
+      const status = String(fields["status"] ?? "created").trim().toLowerCase() || "created";
+      statusSummary[status] = (statusSummary[status] ?? 0) + 1;
+      if (status === "created" && !blockingReasons[start.id]) {
+        const executableRef = String(fields["executable_ref"] ?? "").trim();
+        const chainType = String(fields["chain_type"] ?? "").trim().toLowerCase();
+        if (!executableRef && chainType === "desktop_chain") {
+          blockingReasons[start.id] = "desktop_chain TC requires executable_ref";
+        } else if (isPendingExecutableRef(executableRef)) {
+          blockingReasons[start.id] = `pending: ${executableRef}`;
+        }
+      }
+    }
+    const testCaseCount = tcStarts.length;
+    totalTestCases += testCaseCount;
+    const batchStatus = Object.keys(blockingReasons).length > 0 ? "blocked" : void 0;
+    batches.push({
+      batch_id: batch,
+      file: relPath,
+      scope,
+      ac_coverage: acCoverage,
+      related_scenarios: relatedScenarios,
+      test_case_count: testCaseCount,
+      status_summary: statusSummary,
+      status: batchStatus,
+      blocking_reasons: Object.keys(blockingReasons).length > 0 ? blockingReasons : void 0
+    });
+  }
+  return {
+    registry_version: "1.0",
+    generated_at: opts?.deterministic ? "1970-01-01T00:00:00.000Z" : (/* @__PURE__ */ new Date()).toISOString(),
+    total_batches: batches.length,
+    total_test_cases: totalTestCases,
+    batches
+  };
+}
+function normalizeAcCoverageForRegistry(value) {
+  if (!value || typeof value !== "object") return {};
+  const result = {};
+  for (const [key, val] of Object.entries(value)) {
+    if (Array.isArray(val)) {
+      result[key] = val.map(String);
+    } else if (typeof val === "string") {
+      result[key] = val.split(",").map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  return result;
 }
 function isPendingExecutableRef(ref) {
   const stripped = ref.replace(/^[\s-*()]+/, "").trim();
@@ -5687,6 +6263,20 @@ function parseExecutableRefLines(ref) {
   }
   return results;
 }
+var VALID_TC_STATUSES = /* @__PURE__ */ new Set(["created", "automated", "verified", "waived"]);
+var VALID_CHAIN_TYPES = /* @__PURE__ */ new Set([
+  "desktop_chain",
+  "mock_playwright",
+  "core_e2e",
+  "cli_e2e",
+  "ui_sidecar_bridge",
+  "partial_sidecar",
+  "partial_rust"
+]);
+var DEPRECATED_CHAIN_TYPE_ALIASES = {
+  core_only: "core_e2e",
+  frontend_only: "mock_playwright"
+};
 function isDesktopChainType(chainType) {
   const normalizedChainType = chainType.trim().toLowerCase();
   return normalizedChainType === "desktop_chain" || normalizedChainType === "";
@@ -5694,7 +6284,7 @@ function isDesktopChainType(chainType) {
 function parseChainCoverageStatus(chainCoverage) {
   return chainCoverage.trim().toLowerCase().match(/^[a-z_]+/)?.[0] ?? "";
 }
-async function validatePartialRustEvidence(tcFields, tcKey, root) {
+async function validatePartialRustEvidence(tcFields, tcKey, root, allFiles) {
   const partialEvidence = String(tcFields["partial_evidence"] ?? "");
   if (!partialEvidence.trim()) {
     return { hasValidPartialRust: false, detail: "no partial_evidence field" };
@@ -5718,7 +6308,10 @@ async function validatePartialRustEvidence(tcFields, tcKey, root) {
     return { hasValidPartialRust: false, detail: "no .rs file in partial_evidence" };
   }
   for (const ref of rustRefs) {
-    const normalizedPath = ref.file.startsWith("heimdall/") ? ref.file : `heimdall/${ref.file}`;
+    const normalizedPath = resolveExecutableRefFile(ref.file, allFiles);
+    if (!normalizedPath) {
+      return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
+    }
     const fullPath = (0, import_node_path6.join)(root, normalizedPath);
     let content;
     try {
@@ -5753,6 +6346,46 @@ function detectTestLevel(specFile, content) {
     return "mock_playwright";
   }
   return "desktop_chain";
+}
+function resolveExecutableRefFile(refFile, allFiles) {
+  const normalized = refFile.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!normalized || (0, import_node_path6.isAbsolute)(refFile) || normalized.split("/").includes("..")) {
+    return void 0;
+  }
+  if (allFiles.includes(normalized)) {
+    return normalized;
+  }
+  const suffix = `/${normalized}`;
+  const matches = allFiles.filter((file) => file.endsWith(suffix));
+  return matches.length === 1 ? matches[0] : void 0;
+}
+function isRunnerIncludeCandidate(filePath, runner) {
+  const normalizedPath = filePath.replace(/\\/g, "/");
+  const runnerRoot = runner.root.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "") || ".";
+  if (runnerRoot !== "." && !normalizedPath.startsWith(`${runnerRoot}/`)) {
+    return false;
+  }
+  const relativePath = runnerRoot === "." ? normalizedPath : normalizedPath.slice(runnerRoot.length + 1);
+  return runner.include.some((pattern) => matchesRunnerGlob(relativePath, pattern));
+}
+async function getAcceptingRunners(root, filePath, runners) {
+  const accepting = [];
+  for (const runner of runners) {
+    const normalizedPath = filePath.replace(/\\/g, "/");
+    const runnerRoot = runner.root.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/$/, "") || ".";
+    const relativePath = runnerRoot === "." ? normalizedPath : normalizedPath.startsWith(runnerRoot + "/") ? normalizedPath.slice(runnerRoot.length + 1) : normalizedPath;
+    if (runnerRoot !== "." && !normalizedPath.startsWith(`${runnerRoot}/`)) {
+      continue;
+    }
+    const matchesInclude = runner.include.some((p) => matchesRunnerGlob(relativePath, p));
+    if (!matchesInclude) continue;
+    const matchesExclude = (runner.exclude ?? []).some((p) => matchesRunnerGlob(relativePath, p));
+    if (matchesExclude) continue;
+    const matchesTestIgnore = (runner.testIgnore ?? []).some((p) => matchesRunnerGlob(relativePath, p));
+    if (matchesTestIgnore) continue;
+    accepting.push(runner);
+  }
+  return accepting;
 }
 function splitMarkdownCells(line) {
   const cells = [];
@@ -5907,7 +6540,7 @@ function flattenAcCoverage(value) {
 function needsDesktopChainWarning(node) {
   const tcFields = asRecord(node.attrs?.tcFields);
   const chainType = String(tcFields["chain_type"] ?? "").trim().toLowerCase();
-  if (chainType === "frontend_only" || chainType === "core_only") {
+  if (chainType && VALID_CHAIN_TYPES.has(chainType) && chainType !== "desktop_chain" || chainType in DEPRECATED_CHAIN_TYPE_ALIASES) {
     return false;
   }
   const chainCoverage = String(tcFields["chain_coverage"] ?? "").trim().toLowerCase();
@@ -6330,7 +6963,7 @@ function resolveArtifactContext(graph, opts) {
         const fullPath = (0, import_node_path6.join)(root, ap.path);
         let stat;
         try {
-          stat = (0, import_node_fs3.statSync)(fullPath);
+          stat = (0, import_node_fs4.statSync)(fullPath);
         } catch {
           stat = null;
         }
@@ -6360,7 +6993,7 @@ function resolveArtifactContext(graph, opts) {
           }
         } else {
           try {
-            (0, import_node_fs3.accessSync)(fullPath, import_node_fs3.constants.R_OK);
+            (0, import_node_fs4.accessSync)(fullPath, import_node_fs4.constants.R_OK);
           } catch {
             const msg = `Required baseline artifact is not readable: ${ap.path}`;
             if (!missing.includes(msg)) {
@@ -6579,12 +7212,14 @@ function formatContextMarkdown(manifest) {
   buildGraph,
   buildVersionIndex,
   collectChangedPaths,
+  computeE2eCoverageStats,
   dirname,
   discoverAndAuditPackets,
   discoverTargets,
   doctorArtifactChain,
   extname,
   formatContextMarkdown,
+  generateE2eRegistry,
   getArtifactTypeMetadata,
   getTargetArtifactTypes,
   installManagedHookBlock,

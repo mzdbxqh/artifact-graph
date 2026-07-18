@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, relative } from 'node:path';
-import { ArtifactEdge, ArtifactGraph, ArtifactNode, scanArtifacts } from './index.js';
+import { ArtifactEdge, ArtifactGraph, ArtifactNode, ArtifactSchema, E2eRunnerConfig, loadConfig, scanArtifacts } from './index.js';
+import { matchesRunnerGlob } from './glob-matcher.js';
 
 // @scenario S-02 @feature ACA2
 export const VERSION_LOCK_PATH = 'artifacts/traceability-version-lock.json';
@@ -185,13 +187,15 @@ export async function buildVersionIndex(root: string, graph?: ArtifactGraph): Pr
   };
 }
 
-export async function auditVersionLock(root: string, lockPath = VERSION_LOCK_PATH, graph?: ArtifactGraph): Promise<VersionLockAuditResult> {
+export async function auditVersionLock(root: string, lockPath = VERSION_LOCK_PATH, graph?: ArtifactGraph, config?: ArtifactSchema): Promise<VersionLockAuditResult> {
   const index = await buildVersionIndex(root, graph);
+  const schema = config ?? await loadConfig(root);
   const safeLockPath = normalizeRelativePath(root, lockPath);
   const lock = await readVersionLock(root, safeLockPath);
   const nodeByArtifact = new Map(index.nodes.map((node) => [`${node.type}:${node.id}`, node]));
   const nodeByPath = new Map(index.nodes.map((node) => [node.path, node]));
   const currentEdges = implementationEdges(index);
+  const lockableEdges = await lockableImplementationEdges(root, index, schema);
   const currentEdgeIds = new Set(currentEdges.map((edge) => edge.edgeId));
   const issues: VersionLockIssue[] = [];
   let fresh = 0;
@@ -283,8 +287,34 @@ export async function auditVersionLock(root: string, lockPath = VERSION_LOCK_PAT
     }
   }
 
+  // Liveness check: for each verifies lock entry, check if source file is still active in at least one runner.
+  // Report per lock entry, not per file — multiple locks from the same inactive file each get a finding.
+  const livenessCache = new Map<string, TestFileRunnerLiveness>();
+  for (const entry of lock.locks) {
+    if (entry.kind !== 'verifies') continue;
+    const sourcePath = entry.source.path;
+    const fullSourcePath = join(root, sourcePath);
+    if (!existsSync(fullSourcePath)) continue; // already caught by orphan_lock
+
+    // Cache runner-active check per file path
+    let liveness = livenessCache.get(sourcePath);
+    if (liveness === undefined) {
+      liveness = await getTestFileRunnerLiveness(root, sourcePath, schema);
+      livenessCache.set(sourcePath, liveness);
+    }
+    if (liveness === 'inactive') {
+      issues.push({
+        status: 'orphan_lock',
+        edgeId: entry.edgeId,
+        message: `Liveness: ${sourcePath} is not active in any configured runner — locked verifies edges may reference dead tests`,
+        artifact: entry.artifact,
+        source: entry.source,
+      });
+    }
+  }
+
   const reportedMissingLocks = new Set<string>();
-  for (const edge of currentEdges) {
+  for (const edge of lockableEdges) {
     const edgeId = edge.edgeId;
     if (!lock.locks.some((entry) => entry.edgeId === edgeId)) {
       if (reportedMissingLocks.has(edgeId)) {
@@ -373,6 +403,7 @@ export async function updateVersionLock(root: string, options: VersionLockUpdate
 
 export async function bootstrapVersionLock(root: string, options: VersionLockBootstrapOptions = {}): Promise<VersionLockFile> {
   const index = await buildVersionIndex(root);
+  const config = await loadConfig(root);
   const lockPath = normalizeRelativePath(root, options.lockPath ?? VERSION_LOCK_PATH);
   if (!options.force) {
     const existing = await readVersionLock(root, lockPath);
@@ -383,7 +414,7 @@ export async function bootstrapVersionLock(root: string, options: VersionLockBoo
 
   const nodeByUid = new Map(index.nodes.map((node) => [node.uid, node]));
   const entries = new Map<string, VersionLockEntry>();
-  for (const edge of implementationEdges(index)) {
+  for (const edge of await lockableImplementationEdges(root, index, config)) {
     const source = nodeByUid.get(edge.from);
     const artifact = nodeByUid.get(edge.to);
     if (!source || !artifact) {
@@ -422,10 +453,11 @@ export async function refreshVersionLock(root: string, options: VersionLockRefre
   }
 
   const index = await buildVersionIndex(root);
+  const config = await loadConfig(root);
   const lock = await readVersionLock(root, lockPath);
   const nodeByUid = new Map(index.nodes.map((node) => [node.uid, node]));
   const nodeByPath = new Map(index.nodes.map((node) => [node.path, node]));
-  const currentImplementationEdges = implementationEdges(index);
+  const currentImplementationEdges = await lockableImplementationEdges(root, index, config);
   const currentEdgePairs = new Set(currentImplementationEdges.map((edge) => `${edge.from}\t${edge.to}`));
   const currentEntries = new Map<string, VersionLockEntry>();
   const changedPathSet = new Set(changedPaths);
@@ -508,7 +540,7 @@ export async function refreshVersionLock(root: string, options: VersionLockRefre
     locks: sortBy([...nextLocks.values()], (item) => item.edgeId),
   } satisfies VersionLockFile;
   await writeVersionLock(root, lockPath, next);
-  const postAudit = await auditVersionLock(root, lockPath);
+  const postAudit = await auditVersionLock(root, lockPath, undefined, config);
 
   return {
     schemaVersion: '1.0',
@@ -529,7 +561,8 @@ export async function refreshVersionLock(root: string, options: VersionLockRefre
 export async function traceVersion(root: string, target: string, lockPath = VERSION_LOCK_PATH): Promise<TraceVersionResult> {
   const index = await buildVersionIndex(root);
   const safeLockPath = normalizeRelativePath(root, lockPath);
-  const audit = await auditVersionLock(root, safeLockPath);
+  const config = await loadConfig(root);
+  const audit = await auditVersionLock(root, safeLockPath, undefined, config);
   const targetUid = parseTarget(target);
   const lock = await readVersionLock(root, safeLockPath);
   const targetNode = index.nodes.find((node) => node.uid === targetUid);
@@ -783,6 +816,40 @@ function implementationEdges(index: VersionIndex): Array<VersionedEdge & { edgeI
     });
 }
 
+/**
+ * Return edges eligible for version locking. An inactive file that is explicitly in a
+ * runner's discovery scope is dead evidence and must not be bootstrapped, refreshed, or
+ * reported as a missing lock after an explicit orphan cleanup. Unscoped unit tests remain
+ * lockable because E2E runner configuration has no authority over them.
+ */
+async function lockableImplementationEdges(
+  root: string,
+  index: VersionIndex,
+  config: ArtifactSchema,
+): Promise<Array<VersionedEdge & { edgeId: string }>> {
+  const edges = implementationEdges(index);
+  const nodesByUid = new Map(index.nodes.map((node) => [node.uid, node]));
+  const livenessByPath = new Map<string, TestFileRunnerLiveness>();
+  const result: Array<VersionedEdge & { edgeId: string }> = [];
+
+  for (const edge of edges) {
+    const source = nodesByUid.get(edge.from);
+    if (source?.sourceKind !== 'test') {
+      result.push(edge);
+      continue;
+    }
+    let liveness = livenessByPath.get(source.path);
+    if (liveness === undefined) {
+      liveness = await getTestFileRunnerLiveness(root, source.path, config);
+      livenessByPath.set(source.path, liveness);
+    }
+    if (liveness !== 'inactive') {
+      result.push(edge);
+    }
+  }
+  return result;
+}
+
 function lockRefFromNode(node: VersionedNode): VersionLockRef {
   return {
     type: node.type,
@@ -921,6 +988,104 @@ function normalizeRelativePath(root: string, path: string): string {
 
 function sortBy<T>(items: T[], keyFn: (item: T) => string): T[] {
   return [...items].sort((left, right) => keyFn(left).localeCompare(keyFn(right)));
+}
+
+/**
+ * Check if a test file is active in any configured E2E runner.
+ * A file is active if it matches at least one runner's include patterns
+ * and doesn't match any runner's exclude or testIgnore patterns.
+ */
+export async function isTestFileActiveInAnyRunner(
+  root: string,
+  filePath: string,
+  config?: ArtifactSchema,
+): Promise<boolean> {
+  return (await getTestFileRunnerLiveness(root, filePath, config)) === 'active';
+}
+
+export type TestFileRunnerLiveness = 'active' | 'inactive' | 'unscoped';
+
+/**
+ * Classify a test source against configured runners. `unscoped` means no runner's
+ * root/include discovery domain claims the file, so E2E liveness must not be applied
+ * to ordinary unit-test trace locks.
+ */
+export async function getTestFileRunnerLiveness(
+  root: string,
+  filePath: string,
+  config?: ArtifactSchema,
+): Promise<TestFileRunnerLiveness> {
+  const schema = config ?? await loadConfig(root);
+  const runners = schema.e2e?.runners ?? [];
+
+  // If no runners configured, fall back to legacy behavior
+  if (runners.length === 0) {
+    // Legacy: check for e2e-related files or annotations
+    if (!/e2e/i.test(filePath) && !/\.e2e\./i.test(filePath)) {
+      return 'active'; // Non-e2e files retain legacy active behavior.
+    }
+    // For e2e files, check for annotations
+    const fullSourcePath = join(root, filePath);
+    if (!existsSync(fullSourcePath)) return 'inactive';
+    try {
+      const content = await readFile(fullSourcePath, 'utf-8');
+      return /\/\/!?\s*@(?:e2e_test|tc)\s+/.test(content) ? 'active' : 'inactive';
+    } catch {
+      return 'inactive';
+    }
+  }
+
+  let inRunnerScope = false;
+  for (const runner of runners) {
+    if (!isFileIncludedByRunner(filePath, runner)) continue;
+    inRunnerScope = true;
+    const isActive = await isFileActiveInRunner(root, filePath, runner);
+    if (isActive) return 'active';
+  }
+
+  return inRunnerScope ? 'inactive' : 'unscoped';
+}
+
+function isFileIncludedByRunner(filePath: string, runner: E2eRunnerConfig): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const runnerRoot = runner.root.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '') || '.';
+  if (runnerRoot !== '.' && !normalizedPath.startsWith(`${runnerRoot}/`)) return false;
+  const relativePath = runnerRoot === '.'
+    ? normalizedPath
+    : normalizedPath.slice(runnerRoot.length + 1);
+  return runner.include.some((pattern) => matchesRunnerGlob(relativePath, pattern));
+}
+
+/**
+ * Check if a file is active in a specific runner configuration.
+ */
+async function isFileActiveInRunner(
+  root: string,
+  filePath: string,
+  runner: E2eRunnerConfig,
+): Promise<boolean> {
+  if (!isFileIncludedByRunner(filePath, runner)) return false;
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const runnerRoot = runner.root.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '') || '.';
+
+  // Get relative path from runner root
+  const relativePath = runnerRoot === '.'
+    ? normalizedPath
+    : normalizedPath.slice(runnerRoot.length).replace(/^\//, '');
+
+  // Check if file matches any exclude pattern
+  const matchesExclude = (runner.exclude ?? []).some(pattern =>
+    matchesRunnerGlob(relativePath, pattern)
+  );
+  if (matchesExclude) return false;
+
+  // Check if file matches any testIgnore pattern
+  const matchesTestIgnore = (runner.testIgnore ?? []).some(pattern =>
+    matchesRunnerGlob(relativePath, pattern)
+  );
+  if (matchesTestIgnore) return false;
+
+  return true;
 }
 
 function sortUnique(items: string[]): string[] {

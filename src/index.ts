@@ -1,11 +1,12 @@
 import Database from 'better-sqlite3';
 import matter from 'gray-matter';
 import yaml from 'js-yaml';
-import { accessSync, constants as fsConstants, statSync } from 'node:fs';
+import { accessSync, constants as fsConstants, existsSync, statSync } from 'node:fs';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT } from './packet-constants.js';
 import { VALID_PACKET_TARGET_TYPES, isPacketTargetType } from './packet-validator.js';
+import { matchesRunnerGlob } from './glob-matcher.js';
 
 export interface ArtifactNode {
   uid: string;
@@ -75,6 +76,28 @@ export interface ArtifactEdgeRule {
   kind: string;
 }
 
+/** E2E test runner configuration */
+export interface E2eRunnerConfig {
+  /** Runner name (e.g., 'playwright', 'vitest', 'jest') */
+  name: string;
+  /** Test kind accepted by this runner: 'unit', 'integration', or 'e2e' */
+  kind?: 'unit' | 'integration' | 'e2e';
+  /** Root directory for test discovery (relative to project root) */
+  root: string;
+  /** Include glob patterns for test files */
+  include: string[];
+  /** Exclude glob patterns for test files */
+  exclude?: string[];
+  /** Test ignore patterns (files that should not be considered as tests) */
+  testIgnore?: string[];
+}
+
+/** Waiver entry with mandatory reason */
+export interface E2eWaiver {
+  id: string;
+  reason: string;
+}
+
 export interface ArtifactSchema {
   types: Record<string, ArtifactTypeSchema>;
   idPatterns: Record<string, string>;
@@ -87,6 +110,23 @@ export interface ArtifactSchema {
   context?: {
     /** When false, skip universal baseline injection. Default: true. */
     universal_baseline?: boolean;
+  };
+  /** E2E coverage proof configuration */
+  e2e?: {
+    /** Minimum executable_ref coverage rate (0-1) for warning */
+    executable_ref_warning?: number;
+    /** Minimum executable_ref coverage rate (0-1) for error */
+    executable_ref_error?: number;
+    /** Whether to report uncovered scenarios. Default true. */
+    report_uncovered_scenarios?: boolean;
+    /** Whether to report uncovered features. Default true. */
+    report_uncovered_features?: boolean;
+    /** Scenario waivers (id + reason) from coverage requirements */
+    scenario_waivers?: E2eWaiver[];
+    /** Feature waivers (id + reason) from coverage requirements */
+    feature_waivers?: E2eWaiver[];
+    /** E2E test runner configurations */
+    runners?: E2eRunnerConfig[];
   };
 }
 
@@ -279,6 +319,11 @@ export const DEFAULT_SCHEMA: ArtifactSchema = {
   forbiddenEdges: [{ from: 'scenario', to: 'entity', kind: 'references' }],
   statuses: ['planned', 'active', 'done', 'deprecated'],
   idRanges: {},
+  e2e: {
+    report_uncovered_scenarios: true,
+    report_uncovered_features: true,
+    runners: [],
+  },
 };
 
 export async function loadConfig(root: string): Promise<ArtifactSchema> {
@@ -303,7 +348,26 @@ export async function loadConfig(root: string): Promise<ArtifactSchema> {
     );
   }
 
-  return {
+  // Fail-closed validation for e2e configuration
+  if (parsed.e2e !== undefined) {
+    if (typeof parsed.e2e !== 'object' || parsed.e2e === null || Array.isArray(parsed.e2e)) {
+      throw new Error('Invalid e2e: must be an object.');
+    }
+    validateE2eConfig(parsed.e2e);
+  }
+
+  const mergedE2e = parsed.e2e === undefined
+    ? DEFAULT_SCHEMA.e2e
+    : {
+        ...DEFAULT_SCHEMA.e2e,
+        ...parsed.e2e,
+        runners: (parsed.e2e.runners ?? DEFAULT_SCHEMA.e2e?.runners ?? []).map((runner) => ({
+          kind: 'e2e' as const,
+          ...runner,
+        })),
+      };
+
+  const merged = {
     ...DEFAULT_SCHEMA,
     ...parsed,
     types: mergeArtifactTypes(DEFAULT_SCHEMA.types, parsed.types),
@@ -313,7 +377,114 @@ export async function loadConfig(root: string): Promise<ArtifactSchema> {
     forbiddenEdges: parsed.forbiddenEdges ?? DEFAULT_SCHEMA.forbiddenEdges,
     statuses: parsed.statuses ?? DEFAULT_SCHEMA.statuses,
     idRanges: mergeRecord(DEFAULT_SCHEMA.idRanges, parsed.idRanges),
+    e2e: mergedE2e,
   };
+
+  return merged;
+}
+
+/**
+ * Fail-closed validation for e2e configuration.
+ * Throws on invalid config to prevent silent misconfiguration.
+ */
+function validateE2eConfig(e2e: NonNullable<ArtifactSchema['e2e']>): void {
+  for (const field of ['report_uncovered_scenarios', 'report_uncovered_features'] as const) {
+    if (e2e[field] !== undefined && typeof e2e[field] !== 'boolean') {
+      throw new Error(`Invalid e2e.${field}: must be boolean.`);
+    }
+  }
+  // Validate thresholds are in 0..1
+  if (e2e.executable_ref_warning !== undefined) {
+    if (typeof e2e.executable_ref_warning !== 'number' || e2e.executable_ref_warning < 0 || e2e.executable_ref_warning > 1) {
+      throw new Error(`Invalid e2e.executable_ref_warning: ${JSON.stringify(e2e.executable_ref_warning)}. Must be a number between 0 and 1.`);
+    }
+  }
+  if (e2e.executable_ref_error !== undefined) {
+    if (typeof e2e.executable_ref_error !== 'number' || e2e.executable_ref_error < 0 || e2e.executable_ref_error > 1) {
+      throw new Error(`Invalid e2e.executable_ref_error: ${JSON.stringify(e2e.executable_ref_error)}. Must be a number between 0 and 1.`);
+    }
+  }
+
+  // Validate waivers must be {id, reason} with non-empty reason
+  const validateWaivers = (waivers: unknown, field: string) => {
+    if (waivers === undefined) return;
+    if (!Array.isArray(waivers)) {
+      throw new Error(`Invalid ${field}: must be an array of {id, reason} objects.`);
+    }
+    for (const w of waivers) {
+      if (typeof w !== 'object' || w === null || !('id' in w) || !('reason' in w)) {
+        throw new Error(`Invalid ${field} entry: ${JSON.stringify(w)}. Must be {id, reason} object.`);
+      }
+      if (typeof (w as { id: unknown }).id !== 'string' || !(w as { id: string }).id.trim()) {
+        throw new Error(`Invalid ${field} entry: id must be a non-empty string. Got: ${JSON.stringify((w as { id: unknown }).id)}`);
+      }
+      if (typeof (w as { reason: unknown }).reason !== 'string' || !(w as { reason: string }).reason.trim()) {
+        throw new Error(`Invalid ${field} entry: reason must be a non-empty string. Got: ${JSON.stringify((w as { reason: unknown }).reason)}`);
+      }
+    }
+  };
+  validateWaivers(e2e.scenario_waivers, 'e2e.scenario_waivers');
+  validateWaivers(e2e.feature_waivers, 'e2e.feature_waivers');
+
+  // Validate runners
+  if (e2e.runners !== undefined) {
+    if (!Array.isArray(e2e.runners)) {
+      throw new Error(`Invalid e2e.runners: must be an array.`);
+    }
+    for (const runner of e2e.runners) {
+      if (typeof runner !== 'object' || runner === null) {
+        throw new Error(`Invalid e2e.runners entry: must be an object.`);
+      }
+      if (typeof runner.name !== 'string' || !runner.name.trim()) {
+        throw new Error(`Invalid e2e.runners entry: name must be a non-empty string.`);
+      }
+      if (typeof runner.root !== 'string' || !runner.root.trim()) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].root: must be a non-empty string.`);
+      }
+      // Root must not be absolute
+      if (isAbsolute(runner.root)) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].root: "${runner.root}" must not be an absolute path.`);
+      }
+      // Root must not escape project (no ..)
+      if (runner.root.replace(/\\/g, '/').split('/').includes('..')) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].root: "${runner.root}" must not contain ".." segments.`);
+      }
+      if (!Array.isArray(runner.include) || runner.include.length === 0) {
+        throw new Error(`Invalid e2e.runners[${runner.name}].include: must be a non-empty array of glob patterns.`);
+      }
+      for (const pattern of runner.include) {
+        if (typeof pattern !== 'string' || !pattern.trim()) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].include: pattern must be a non-empty string.`);
+        }
+      }
+      if (runner.exclude !== undefined) {
+        if (!Array.isArray(runner.exclude)) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].exclude: must be an array.`);
+        }
+        for (const pattern of runner.exclude) {
+          if (typeof pattern !== 'string' || !pattern.trim()) {
+            throw new Error(`Invalid e2e.runners[${runner.name}].exclude: pattern must be a non-empty string.`);
+          }
+        }
+      }
+      if (runner.testIgnore !== undefined) {
+        if (!Array.isArray(runner.testIgnore)) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].testIgnore: must be an array.`);
+        }
+        for (const pattern of runner.testIgnore) {
+          if (typeof pattern !== 'string' || !pattern.trim()) {
+            throw new Error(`Invalid e2e.runners[${runner.name}].testIgnore: pattern must be a non-empty string.`);
+          }
+        }
+      }
+      // Validate kind if present
+      if (runner.kind !== undefined) {
+        if (!['unit', 'integration', 'e2e'].includes(runner.kind)) {
+          throw new Error(`Invalid e2e.runners[${runner.name}].kind: "${runner.kind}". Must be unit, integration, or e2e.`);
+        }
+      }
+    }
+  }
 }
 
 export function buildGraph(nodes: Omit<ArtifactNode, 'uid'>[], edges: ArtifactEdge[], diagnostics: ValidationIssue[] = [], root?: string): ArtifactGraph {
@@ -2738,6 +2909,38 @@ function validateE2eTests(graph: ArtifactGraph): ValidationIssue[] {
       }
     }
 
+    // O1: TC status lifecycle validation
+    const tcStatus = String(fields['status'] ?? '').trim().toLowerCase();
+    if (tcStatus && !VALID_TC_STATUSES.has(tcStatus)) {
+      issues.push(issue('E2E_INVALID_TC_STATUS', `${node.uid} has invalid TC status "${tcStatus}"; allowed: ${[...VALID_TC_STATUSES].join(', ')}`, node.path, node.line, { node: node.uid, severity: 'warning' }));
+    }
+    if (tcStatus === 'waived') {
+      const reason = String(fields['waived_reason'] ?? '').trim();
+      if (!reason) {
+        issues.push(issue('E2E_WAIVED_NO_REASON', `${node.uid} has status "waived" but no waived_reason`, node.path, node.line, { node: node.uid, severity: 'warning' }));
+      }
+    }
+
+    // O1: chain_type vocabulary validation
+    const rawChainType = String(fields['chain_type'] ?? '').trim();
+    const chainType = rawChainType.toLowerCase();
+    if (rawChainType) {
+      if (!VALID_CHAIN_TYPES.has(chainType) && !(chainType in DEPRECATED_CHAIN_TYPE_ALIASES)) {
+        issues.push(issue('E2E_INVALID_CHAIN_TYPE', `${node.uid} has invalid chain_type "${rawChainType}"; allowed: ${[...VALID_CHAIN_TYPES].join(', ')}`, node.path, node.line, { node: node.uid, severity: 'warning' }));
+      } else if (chainType in DEPRECATED_CHAIN_TYPE_ALIASES) {
+        issues.push(issue('E2E_DEPRECATED_CHAIN_TYPE', `${node.uid} uses deprecated chain_type "${rawChainType}"; migrate to "${DEPRECATED_CHAIN_TYPE_ALIASES[chainType]}"`, node.path, node.line, { node: node.uid, severity: 'warning' }));
+      }
+    }
+
+    // O1: ac_coverage_rate validation — must be derived, not freetext.
+    // Any handwritten ac_coverage_rate is rejected; coverage is computed from ac_coverage
+    // declarations and the feature acceptance-criteria inventory.
+    const rawAcCoverageRate = String(fields['ac_coverage_rate'] ?? '').trim();
+    if (rawAcCoverageRate) {
+      issues.push(issue('E2E_AC_COVERAGE_RATE_FREETEXT', `${node.uid} has handwritten ac_coverage_rate "${rawAcCoverageRate}"; this field must be derived from ac_coverage and the feature acceptance-criteria inventory`, node.path, node.line, { node: node.uid, severity: 'warning' }));
+    }
+
+    // O3: deterministic checklist rules
     if (needsDesktopChainWarning(node)) {
       issues.push(issue('E2E_DESKTOP_CHAIN_WARNING', `${node.uid} appears desktop-related but does not cover the full React/UI -> Tauri/IPC -> Node sidecar/JSON Lines -> core/engine -> SQLite/report data 真实桌面链路`, node.path, node.line, { node: node.uid, severity: 'warning' }));
     }
@@ -2803,10 +3006,10 @@ function validateE2eRegistry(graph: ArtifactGraph): ValidationIssue[] {
   return issues;
 }
 
-export async function validateExecutableTraceability(root: string): Promise<ValidationIssue[]> {
+export async function validateExecutableTraceability(root: string, config?: ArtifactSchema): Promise<ValidationIssue[]> {
   const issues: ValidationIssue[] = [];
+  const schema = config ?? await loadConfig(root);
   const e2eDir = join(root, 'artifacts', 'tests', 'e2e');
-  const specPatterns = ['heimdall/**/*.spec.ts', 'heimdall/**/*.e2e.spec.ts'];
 
   let e2eFiles: string[];
   try {
@@ -2855,9 +3058,17 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
 
   const allFiles = await walk(root);
   const specFiles = new Set<string>();
-  for (const pattern of specPatterns) {
+  const configuredRunners = schema.e2e?.runners ?? [];
+  if (configuredRunners.length > 0) {
     for (const file of allFiles) {
-      if (matchesPattern(file, pattern)) {
+      if (configuredRunners.some((runner) => isRunnerIncludeCandidate(file, runner))) {
+        specFiles.add(file);
+      }
+    }
+  } else {
+    // Backward-compatible annotation discovery without assuming a product-specific source root.
+    for (const file of allFiles) {
+      if (/\.(?:e2e\.)?spec\.(?:ts|tsx|js|jsx|mjs|cjs)$/.test(file)) {
         specFiles.add(file);
       }
     }
@@ -2943,11 +3154,22 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
     const refEntries = parseExecutableRefLines(ref);
     const validFiles: string[] = [];
     for (const entry of refEntries) {
-      const normalizedRefFile = entry.file.startsWith('heimdall/') ? entry.file : `heimdall/${entry.file}`;
-      const fileExists = specFiles.has(normalizedRefFile);
+      const normalizedRefFile = resolveExecutableRefFile(entry.file, allFiles);
+      const fileExists = normalizedRefFile !== undefined && specFiles.has(normalizedRefFile);
       if (!fileExists) {
         issues.push(issue('E2E-TRACE-001', `executable_ref target file not found: ${entry.file}`, path, line, { node: tcKey, severity: 'warning' }));
         continue;
+      }
+      // O3: unit-test-not-e2e — check if executable_ref is only accepted by unit runners
+      // Use runner configuration to determine if the file is only a unit test
+      const runners = schema.e2e?.runners ?? [];
+      if (runners.length > 0) {
+        const acceptingRunners = await getAcceptingRunners(root, normalizedRefFile, runners);
+        const hasE2eRunner = acceptingRunners.some((r) => r.kind === 'e2e' || r.kind === 'integration');
+        const hasUnitRunner = acceptingRunners.some((r) => r.kind === 'unit');
+        if (hasUnitRunner && !hasE2eRunner && acceptingRunners.length > 0) {
+          issues.push(issue('E2E-UNIT-TEST-NOT-E2E', `executable_ref target ${entry.file} is only accepted by unit runner(s) [${acceptingRunners.map((r) => r.name).join(', ')}], not by any e2e/integration runner`, path, line, { node: tcKey, severity: 'warning' }));
+        }
       }
       if (entry.testId) {
         let content: string;
@@ -2965,10 +3187,7 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
       // Check that the referenced file has a @e2e_test or @tc line-comment annotation for this TC.
       // Block-comment annotations (e.g. JSDoc) are NOT recognized — only `// @e2e_test` or `// @tc` is valid.
       const annotationsForTc = refToSource.get(tcKey);
-      const hasAnnotationInFile = annotationsForTc?.some((ann) => {
-        const normalizedAnnFile = ann.file.startsWith('heimdall/') ? ann.file : `heimdall/${ann.file}`;
-        return normalizedAnnFile === normalizedRefFile;
-      }) ?? false;
+      const hasAnnotationInFile = annotationsForTc?.some((ann) => ann.file === normalizedRefFile) ?? false;
       if (!hasAnnotationInFile) {
         issues.push(issue('E2E-TRACE-003', `executable_ref target ${entry.file} has no E2E trace annotation ${tcKey}`, path, line, { node: tcKey, severity: 'warning' }));
         continue;
@@ -3013,8 +3232,6 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
         continue;
       }
       // Check against all ref entries for detail reporting
-      const primaryRef = refEntries[0];
-      const normalizedPrimary = primaryRef?.file.startsWith('heimdall/') ? primaryRef?.file : `heimdall/${primaryRef?.file ?? ''}`;
       const detail = `file: MD refs=[${refEntries.map((e) => e.file).join(', ')}] vs source=${ann.file}`;
       issues.push(issue('E2E-TRACE-003', `executable_ref ↔ E2E trace annotation mismatch for ${tcKey}: ${detail}`, path, line, { node: tcKey, severity: 'warning' }));
     }
@@ -3022,18 +3239,42 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
 
   // Check D: desktop_chain TC points to mock_playwright test
   // Only check annotations in files that are actually referenced by this TC's executable_ref.
-  for (const [tcKey, { chainType, path, line }] of mdToRef) {
-    if (!isDesktopChainType(chainType)) {
-      continue;
+  // Per artifact-chain-spec §5.2: evidence level authority is the Markdown TC side, not source annotations.
+  // When Markdown explicitly declares desktop_chain via chain_type field, suppress E2E-TRACE-004 entirely.
+
+  // Check D0: desktop_chain TC without executable_ref
+  // Only check TCs that explicitly declare chain_type as desktop_chain (not default)
+  for (const [tcKey, { chainType, path, line }] of allMdTcInfo) {
+    const tcFields = tcKeyToFields.get(tcKey);
+    const explicitChainType = String(tcFields?.['chain_type'] ?? '').trim().toLowerCase();
+    if (explicitChainType !== 'desktop_chain') {
+      continue; // Only check explicitly declared desktop_chain TCs
     }
+    if (!mdToRef.has(tcKey)) {
+      issues.push(issue('E2E-DESKTOP-CHAIN-MISSING', `desktop_chain TC ${tcKey} has no executable_ref`, path, line, { node: tcKey, severity: 'warning' }));
+    }
+  }
+  for (const [tcKey, { chainType, path, line }] of mdToRef) {
+    const normalizedDeclaredChainType = chainType.trim().toLowerCase();
+    const hasLegalNonDesktopDeclaration = normalizedDeclaredChainType.length > 0
+      && VALID_CHAIN_TYPES.has(normalizedDeclaredChainType)
+      && normalizedDeclaredChainType !== 'desktop_chain';
+    if (hasLegalNonDesktopDeclaration) continue;
     const validFiles = new Set(tcValidRefFiles.get(tcKey) ?? []);
     const sourceAnnotations = refToSource.get(tcKey);
     if (!sourceAnnotations) {
       continue;
     }
+    // Check if the TC explicitly declared desktop_chain (not just default empty)
+    const tcFields = tcKeyToFields.get(tcKey);
+    const explicitChainType = String(tcFields?.['chain_type'] ?? '').trim().toLowerCase();
+    const hasExplicitDesktopChain = explicitChainType === 'desktop_chain';
+    // Skip E2E-TRACE-004 when Markdown explicitly declares desktop_chain (Markdown authority)
+    if (hasExplicitDesktopChain) {
+      continue;
+    }
     for (const ann of sourceAnnotations) {
-      const normalizedAnnFile = ann.file.startsWith('heimdall/') ? ann.file : `heimdall/${ann.file}`;
-      if (!validFiles.has(normalizedAnnFile)) {
+      if (!validFiles.has(ann.file)) {
         continue; // Skip annotations from files not in this TC's executable_ref
       }
       if (ann.level === 'mock_playwright') {
@@ -3064,10 +3305,7 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
 
     // Filter annotations to only files validated in this TC's executable_ref.
     const validFiles = new Set(tcValidRefFiles.get(tcKey) ?? []);
-    const sourceAnnotations = refToSource.get(tcKey)?.filter((ann) => {
-      const normalized = ann.file.startsWith('heimdall/') ? ann.file : `heimdall/${ann.file}`;
-      return validFiles.has(normalized);
-    });
+    const sourceAnnotations = refToSource.get(tcKey)?.filter((ann) => validFiles.has(ann.file));
 
     const hasDesktopChain = sourceAnnotations?.some((ann) => ann.level === 'desktop_chain') ?? false;
     const hasBridge = sourceAnnotations?.some((ann) => ann.level === 'ui_sidecar_bridge') ?? false;
@@ -3085,7 +3323,7 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
       if (hasDesktopChain) {
         hasValidEvidence = true;
       } else if (hasBridge) {
-        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root);
+        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root, allFiles);
         if (partialResult.hasValidPartialRust) {
           hasValidEvidence = true;
         } else {
@@ -3128,7 +3366,7 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
       }
       let partialDetail = '';
       if (hasBridge) {
-        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root);
+        const partialResult = await validatePartialRustEvidence(tcFields, tcKey, root, allFiles);
         if (partialResult.hasValidPartialRust) {
           continue; // composite complete: ui_sidecar_bridge + verified partial_rust
         }
@@ -3145,6 +3383,432 @@ export async function validateExecutableTraceability(root: string): Promise<Vali
   }
 
   return issues;
+}
+
+/** O2: E2E coverage statistics and blackhole diagnostics */
+export interface E2eCoverageStats {
+  totalTestCases: number;
+  withExecutableRef: number;
+  executableRefRate: string;
+  /** TCs by status */
+  statusBreakdown: Record<string, number>;
+  /** TCs by chain_type */
+  chainTypeBreakdown: Record<string, number>;
+  /** Scenarios with zero E2E coverage */
+  uncoveredScenarios: string[];
+  /** Features with zero E2E coverage */
+  uncoveredFeatures: string[];
+  /** Configurable thresholds */
+  thresholdWarnings: string[];
+  thresholdErrors: string[];
+  /** Derived ac_coverage_rate per feature */
+  acCoverageRateByFeature: Record<string, { numerator: number; denominator: number; rate: number }>;
+  /** Multi-dimensional scenario coverage */
+  scenarioCoverage: Record<string, { linked: boolean; acCovered: boolean; waived: boolean; verified: boolean }>;
+  /** Multi-dimensional feature coverage */
+  featureCoverage: Record<string, { linked: boolean; acCovered: boolean; waived: boolean; verified: boolean }>;
+}
+
+export interface E2eCoverageThresholds {
+  /** Minimum executable_ref coverage rate (0-1). Below this triggers warning. */
+  executableRefWarning?: number;
+  /** Minimum executable_ref coverage rate (0-1). Below this triggers error. */
+  executableRefError?: number;
+  /** Whether to report uncovered scenarios as warnings. Default true. */
+  reportUncoveredScenarios?: boolean;
+  /** Whether to report uncovered features as warnings. Default true. */
+  reportUncoveredFeatures?: boolean;
+  /** Explicit waivers: scenario IDs that are waived from coverage requirements */
+  scenarioWaivers?: E2eWaiver[];
+  /** Explicit waivers: feature IDs that are waived from coverage requirements */
+  featureWaivers?: E2eWaiver[];
+}
+
+export async function computeE2eCoverageStats(
+  graph: ArtifactGraph,
+  root: string,
+  thresholds: E2eCoverageThresholds = {},
+): Promise<E2eCoverageStats> {
+  const e2eNodes = graph.nodes.filter((n) => n.type === 'e2e_test' && n.attrs?.fileLevelOnly !== true);
+  const totalTestCases = e2eNodes.length;
+
+  // Count executable_ref coverage
+  let withExecutableRef = 0;
+  const statusBreakdown: Record<string, number> = {};
+  const chainTypeBreakdown: Record<string, number> = {};
+
+  const e2eDir = join(root, 'artifacts', 'tests', 'e2e');
+  const tcFieldsMap = new Map<string, Record<string, string>>();
+
+  // Parse TC fields for all e2e test files
+  let e2eFiles: string[];
+  try {
+    e2eFiles = (await readdir(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join(e2eDir, name));
+  } catch {
+    e2eFiles = [];
+  }
+
+  for (const filePath of e2eFiles) {
+    const raw = await readFile(filePath, 'utf-8');
+    const lines = raw.split(/\r?\n/);
+    const tcStarts: Array<{ id: string; index: number }> = [];
+    lines.forEach((line, index) => {
+      const match = /^#{2,3}\s+(TC-\d+[a-z]?)\s*[:：]?\s*.*$/.exec(line);
+      if (match) {
+        tcStarts.push({ id: match[1], index });
+      }
+    });
+    const parsed = matter(raw);
+    const batch = String((parsed.data as Record<string, unknown>).test_batch ?? basename(filePath, extname(filePath))).trim();
+    for (let i = 0; i < tcStarts.length; i++) {
+      const start = tcStarts[i];
+      const end = tcStarts[i + 1]?.index ?? lines.length;
+      const block = lines.slice(start.index, end);
+      const fields = extractE2eTcFields(block);
+      tcFieldsMap.set(`${batch}:${start.id}`, fields);
+    }
+  }
+
+  for (const node of e2eNodes) {
+    const tcKey = node.code;
+    const fields = tcFieldsMap.get(tcKey) ?? asRecord(node.attrs?.tcFields);
+    const execRef = String(fields['executable_ref'] ?? '').trim();
+    if (execRef && !isPendingExecutableRef(execRef)) {
+      withExecutableRef++;
+    }
+
+    const status = String(fields['status'] ?? 'created').trim().toLowerCase();
+    statusBreakdown[status] = (statusBreakdown[status] ?? 0) + 1;
+
+    const chainType = String(fields['chain_type'] ?? '').trim().toLowerCase() || 'unspecified';
+    chainTypeBreakdown[chainType] = (chainTypeBreakdown[chainType] ?? 0) + 1;
+  }
+
+  const executableRefRate = totalTestCases > 0
+    ? `${withExecutableRef}/${totalTestCases} (${(withExecutableRef / totalTestCases * 100).toFixed(1)}%)`
+    : '0/0';
+
+  // O2: Scenario and feature coverage gap detection
+  const scenarioNodes = graph.nodes.filter((n) => n.type === 'scenario');
+  const featureNodes = graph.nodes.filter((n) => n.type === 'feature');
+
+  // Multi-dimensional coverage tracking
+  const linkedScenarios = new Set<string>();
+  const linkedFeatures = new Set<string>();
+  const acCoveredScenarios = new Set<string>();
+  const acCoveredFeatures = new Set<string>();
+  const verifiedScenarios = new Set<string>();
+  const verifiedFeatures = new Set<string>();
+
+  for (const edge of graph.edges) {
+    if (edge.kind === 'verifies' && edge.from.startsWith('e2e_test:')) {
+      if (edge.to.startsWith('scenario:')) {
+        linkedScenarios.add(edge.to.replace('scenario:', ''));
+      }
+      if (edge.to.startsWith('feature:')) {
+        linkedFeatures.add(edge.to.replace('feature:', ''));
+      }
+    }
+  }
+
+  // Check AC coverage from e2e_test ac_coverage declarations
+  for (const node of e2eNodes) {
+    const fields = tcFieldsMap.get(node.code) ?? asRecord(node.attrs?.tcFields);
+    const acCoverage = asRecord(fields['ac_coverage'] ?? node.attrs?.ac_coverage);
+    for (const feature of Object.keys(acCoverage)) {
+      acCoveredFeatures.add(feature);
+    }
+    // Check if TC covers scenarios via ac_coverage
+    const relatedScenarios = toArray(fields['related_scenarios'] ?? node.attrs?.related_scenarios).map(String);
+    for (const scenario of relatedScenarios) {
+      acCoveredScenarios.add(scenario);
+    }
+  }
+
+  // Check verified status from TC fields
+  // Verified requires: status=verified AND non-pending executable_ref AND target active in e2e runner
+  const runners = (await loadConfig(root)).e2e?.runners ?? [];
+  const allProjectFiles = await walk(root);
+  for (const node of e2eNodes) {
+    const fields = tcFieldsMap.get(node.code) ?? asRecord(node.attrs?.tcFields);
+    const status = String(fields['status'] ?? '').trim().toLowerCase();
+    const execRef = String(fields['executable_ref'] ?? '').trim();
+    if (status !== 'verified') continue;
+    // Must have non-pending executable_ref
+    if (!execRef || isPendingExecutableRef(execRef)) continue;
+    // Check that executable_ref target is active in at least one e2e runner
+    if (runners.length === 0) continue;
+    let hasActiveE2eRef = false;
+    for (const entry of parseExecutableRefLines(execRef)) {
+      const normalized = resolveExecutableRefFile(entry.file, allProjectFiles);
+      if (!normalized || !existsSync(join(root, normalized))) continue;
+      const accepting = await getAcceptingRunners(root, normalized, runners);
+      if (accepting.some((runner) => runner.kind === 'e2e')) {
+        hasActiveE2eRef = true;
+        break;
+      }
+    }
+    if (!hasActiveE2eRef) continue;
+    // Mark all related scenarios and features as verified
+    const relatedScenarios = toArray(fields['related_scenarios'] ?? node.attrs?.related_scenarios).map(String);
+    for (const scenario of relatedScenarios) {
+      verifiedScenarios.add(scenario);
+    }
+    const acCoverage = asRecord(fields['ac_coverage'] ?? node.attrs?.ac_coverage);
+    for (const feature of Object.keys(acCoverage)) {
+      verifiedFeatures.add(feature);
+    }
+  }
+
+  const scenarioWaivers = new Set((thresholds.scenarioWaivers ?? []).map((w) => w.id));
+  const featureWaivers = new Set((thresholds.featureWaivers ?? []).map((w) => w.id));
+
+  const uncoveredScenarios = scenarioNodes
+    .map((n) => n.code)
+    .filter((code) => !linkedScenarios.has(code) && !scenarioWaivers.has(code));
+
+  // Gap 5: uncoveredFeatures uses AC coverage, not just linked edges.
+  // A feature is covered if it has ac_coverage declarations from e2e tests.
+  const uncoveredFeatures = featureNodes
+    .map((n) => n.code)
+    .filter((code) => !acCoveredFeatures.has(code) && !featureWaivers.has(code));
+
+  // Build multi-dimensional coverage maps
+  const scenarioCoverage: Record<string, { linked: boolean; acCovered: boolean; waived: boolean; verified: boolean }> = {};
+  for (const node of scenarioNodes) {
+    scenarioCoverage[node.code] = {
+      linked: linkedScenarios.has(node.code),
+      acCovered: acCoveredScenarios.has(node.code),
+      waived: scenarioWaivers.has(node.code),
+      verified: !scenarioWaivers.has(node.code) && verifiedScenarios.has(node.code),
+    };
+  }
+
+  const featureCoverage: Record<string, { linked: boolean; acCovered: boolean; waived: boolean; verified: boolean }> = {};
+  for (const node of featureNodes) {
+    featureCoverage[node.code] = {
+      linked: linkedFeatures.has(node.code),
+      acCovered: acCoveredFeatures.has(node.code),
+      waived: featureWaivers.has(node.code),
+      verified: !featureWaivers.has(node.code) && verifiedFeatures.has(node.code),
+    };
+  }
+
+  // Threshold checks
+  const thresholdWarnings: string[] = [];
+  const thresholdErrors: string[] = [];
+
+  const warningRate = thresholds.executableRefWarning;
+  const errorRate = thresholds.executableRefError;
+  const actualRate = totalTestCases > 0 ? withExecutableRef / totalTestCases : 1;
+
+  if (warningRate !== undefined && actualRate < warningRate) {
+    thresholdWarnings.push(`executable_ref coverage ${executableRefRate} < warning threshold ${(warningRate * 100).toFixed(0)}%`);
+  }
+  if (errorRate !== undefined && actualRate < errorRate) {
+    thresholdErrors.push(`executable_ref coverage ${executableRefRate} < error threshold ${(errorRate * 100).toFixed(0)}%`);
+  }
+
+  if (thresholds.reportUncoveredScenarios !== false && uncoveredScenarios.length > 0) {
+    thresholdWarnings.push(`${uncoveredScenarios.length} scenario(s) have no E2E coverage: ${uncoveredScenarios.join(', ')}`);
+  }
+  if (thresholds.reportUncoveredFeatures !== false && uncoveredFeatures.length > 0) {
+    thresholdWarnings.push(`${uncoveredFeatures.length} feature(s) have no E2E coverage: ${uncoveredFeatures.join(', ')}`);
+  }
+
+  // O1: Derive ac_coverage_rate per feature from ac_coverage declarations
+  const acCoverageRateByFeature: Record<string, { numerator: number; denominator: number; rate: number }> = {};
+
+  // Get all feature ACs from PRD features
+  const featureAcMap = new Map<string, Set<string>>();
+  for (const node of featureNodes) {
+    const acs = parseAcceptanceCriteria(await readFile(join(root, node.path), 'utf-8'));
+    featureAcMap.set(node.code, new Set(acs));
+  }
+
+  // Count covered ACs per feature from e2e_test ac_coverage declarations
+  const coveredAcByFeature = new Map<string, Set<string>>();
+  for (const node of e2eNodes) {
+    const fields = tcFieldsMap.get(node.code) ?? asRecord(node.attrs?.tcFields);
+    const acCoverage = asRecord(fields['ac_coverage'] ?? node.attrs?.ac_coverage);
+    for (const [feature, acs] of Object.entries(acCoverage)) {
+      const existing = coveredAcByFeature.get(feature) ?? new Set<string>();
+      for (const ac of toArray(acs)) {
+        existing.add(String(ac));
+      }
+      coveredAcByFeature.set(feature, existing);
+    }
+  }
+
+  // Calculate coverage rate per feature
+  for (const [feature, allAcs] of featureAcMap) {
+    const denominator = allAcs.size;
+    if (denominator === 0) continue;
+    const coveredAcs = coveredAcByFeature.get(feature) ?? new Set<string>();
+    const numerator = [...coveredAcs].filter((ac) => allAcs.has(ac)).length;
+    acCoverageRateByFeature[feature] = {
+      numerator,
+      denominator,
+      rate: denominator > 0 ? numerator / denominator : 0,
+    };
+  }
+
+  return {
+    totalTestCases,
+    withExecutableRef,
+    executableRefRate,
+    statusBreakdown,
+    chainTypeBreakdown,
+    uncoveredScenarios,
+    uncoveredFeatures,
+    thresholdWarnings,
+    thresholdErrors,
+    acCoverageRateByFeature,
+    scenarioCoverage,
+    featureCoverage,
+  };
+}
+
+/** O4: Deterministic, idempotent E2E registry generation from Markdown sources */
+export interface E2eRegistryBatch {
+  batch_id: string;
+  file: string;
+  scope: string;
+  ac_coverage: Record<string, string[]>;
+  related_scenarios: string[];
+  test_case_count: number;
+  status_summary?: Record<string, number>;
+  /** Batch-level status: 'blocked' when frontmatter fixes_block indicates blocking */
+  status?: string;
+  /** Blocking reasons from frontmatter fixes_block */
+  blocking_reasons?: Record<string, string>;
+}
+
+export interface E2eRegistry {
+  registry_version: string;
+  generated_at: string;
+  total_batches: number;
+  total_test_cases: number;
+  batches: E2eRegistryBatch[];
+}
+
+/**
+ * Generate E2E registry from Markdown test files.
+ * Deterministic: same input always produces same output (except generated_at).
+ * Use `--deterministic` to set generated_at to epoch for idempotent diff checks.
+ */
+export async function generateE2eRegistry(root: string, opts?: { deterministic?: boolean }): Promise<E2eRegistry> {
+  const e2eDir = join(root, 'artifacts', 'tests', 'e2e');
+  let files: string[];
+  try {
+    files = (await readdir(e2eDir))
+      .filter((name) => /^test-.*\.md$/.test(name))
+      .sort();
+  } catch {
+    return {
+      registry_version: '1.0',
+      generated_at: opts?.deterministic ? '1970-01-01T00:00:00.000Z' : new Date().toISOString(),
+      total_batches: 0,
+      total_test_cases: 0,
+      batches: [],
+    };
+  }
+
+  const batches: E2eRegistryBatch[] = [];
+  let totalTestCases = 0;
+
+  for (const file of files) {
+    const filePath = join(e2eDir, file);
+    const raw = await readFile(filePath, 'utf-8');
+    const parsed = matter(raw);
+    const data = parsed.data as Record<string, unknown>;
+    const batch = String(data.test_batch ?? basename(file, extname(file))).trim();
+    const relPath = `artifacts/tests/e2e/${file}`;
+
+    const scope = String(data.scope ?? '').trim();
+    const acCoverage = normalizeAcCoverageForRegistry(data.ac_coverage);
+    const relatedScenarios = toArray(data.related_scenarios).map(String).filter(Boolean);
+
+    const lines = raw.split(/\r?\n/);
+    const tcStarts: Array<{ id: string; index: number }> = [];
+    lines.forEach((line, index) => {
+      const match = /^#{2,3}\s+(TC-\d+[a-z]?)\s*[:：]?\s*.*$/.exec(line);
+      if (match) {
+        tcStarts.push({ id: match[1], index });
+      }
+    });
+
+    const statusSummary: Record<string, number> = {};
+    const blockingReasons: Record<string, string> = {};
+
+    // Check frontmatter-level blocking (fixes_block is in frontmatter, not TC fields)
+    const frontmatterFixesBlock = String(data.fixes_block ?? '').trim();
+    if (frontmatterFixesBlock && /no\s+(test\s+file|e2e)/i.test(frontmatterFixesBlock)) {
+      // All TCs in this batch are blocked by frontmatter declaration
+      for (const tc of tcStarts) {
+        blockingReasons[tc.id] = frontmatterFixesBlock;
+      }
+    }
+
+    for (const start of tcStarts) {
+      const end = tcStarts[tcStarts.indexOf(start) + 1]?.index ?? lines.length;
+      const block = lines.slice(start.index, end);
+      const fields = extractE2eTcFields(block);
+      const status = String(fields['status'] ?? 'created').trim().toLowerCase() || 'created';
+      statusSummary[status] = (statusSummary[status] ?? 0) + 1;
+
+      // Check for TC-level blocking conditions when status is 'created'
+      if (status === 'created' && !blockingReasons[start.id]) {
+        const executableRef = String(fields['executable_ref'] ?? '').trim();
+        const chainType = String(fields['chain_type'] ?? '').trim().toLowerCase();
+
+        if (!executableRef && chainType === 'desktop_chain') {
+          blockingReasons[start.id] = 'desktop_chain TC requires executable_ref';
+        } else if (isPendingExecutableRef(executableRef)) {
+          blockingReasons[start.id] = `pending: ${executableRef}`;
+        }
+      }
+    }
+
+    const testCaseCount = tcStarts.length;
+    totalTestCases += testCaseCount;
+
+    // Batch status: 'blocked' when frontmatter has blocking fixes_block, otherwise undefined
+    const batchStatus = Object.keys(blockingReasons).length > 0 ? 'blocked' : undefined;
+
+    batches.push({
+      batch_id: batch,
+      file: relPath,
+      scope,
+      ac_coverage: acCoverage,
+      related_scenarios: relatedScenarios,
+      test_case_count: testCaseCount,
+      status_summary: statusSummary,
+      status: batchStatus,
+      blocking_reasons: Object.keys(blockingReasons).length > 0 ? blockingReasons : undefined,
+    });
+  }
+
+  return {
+    registry_version: '1.0',
+    generated_at: opts?.deterministic ? '1970-01-01T00:00:00.000Z' : new Date().toISOString(),
+    total_batches: batches.length,
+    total_test_cases: totalTestCases,
+    batches,
+  };
+}
+
+function normalizeAcCoverageForRegistry(value: unknown): Record<string, string[]> {
+  if (!value || typeof value !== 'object') return {};
+  const result: Record<string, string[]> = {};
+  for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+    if (Array.isArray(val)) {
+      result[key] = val.map(String);
+    } else if (typeof val === 'string') {
+      result[key] = val.split(',').map((s) => s.trim()).filter(Boolean);
+    }
+  }
+  return result;
 }
 
 function isPendingExecutableRef(ref: string): boolean {
@@ -3180,6 +3844,18 @@ function parseExecutableRefLines(ref: string): Array<{ file: string; testId?: st
   return results;
 }
 
+// O1: TC status lifecycle and chain_type vocabulary
+const VALID_TC_STATUSES = new Set(['created', 'automated', 'verified', 'waived']);
+const VALID_CHAIN_TYPES = new Set([
+  'desktop_chain', 'mock_playwright', 'core_e2e', 'cli_e2e',
+  'ui_sidecar_bridge', 'partial_sidecar', 'partial_rust',
+]);
+// Legacy aliases → canonical mapping (accepted with migration warning)
+const DEPRECATED_CHAIN_TYPE_ALIASES: Record<string, string> = {
+  core_only: 'core_e2e',
+  frontend_only: 'mock_playwright',
+};
+
 function isDesktopChainType(chainType: string): boolean {
   const normalizedChainType = chainType.trim().toLowerCase();
   return normalizedChainType === 'desktop_chain' || normalizedChainType === '';
@@ -3200,6 +3876,7 @@ async function validatePartialRustEvidence(
   tcFields: Record<string, string>,
   tcKey: string,
   root: string,
+  allFiles: string[],
 ): Promise<{ hasValidPartialRust: boolean; detail: string }> {
   const partialEvidence = String(tcFields['partial_evidence'] ?? '');
   if (!partialEvidence.trim()) {
@@ -3230,7 +3907,10 @@ async function validatePartialRustEvidence(
   }
 
   for (const ref of rustRefs) {
-    const normalizedPath = ref.file.startsWith('heimdall/') ? ref.file : `heimdall/${ref.file}`;
+    const normalizedPath = resolveExecutableRefFile(ref.file, allFiles);
+    if (!normalizedPath) {
+      return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
+    }
     const fullPath = join(root, normalizedPath);
     let content: string;
     try {
@@ -3272,6 +3952,68 @@ function detectTestLevel(specFile: string, content: string): string {
     return 'mock_playwright';
   }
   return 'desktop_chain';
+}
+
+/**
+ * Resolve an executable reference without assuming a product-specific source root.
+ * Project-relative paths win; references relative to a nested consumer repository are
+ * accepted only when their normalized suffix identifies exactly one project file.
+ */
+function resolveExecutableRefFile(refFile: string, allFiles: string[]): string | undefined {
+  const normalized = refFile.replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized || isAbsolute(refFile) || normalized.split('/').includes('..')) {
+    return undefined;
+  }
+  if (allFiles.includes(normalized)) {
+    return normalized;
+  }
+  const suffix = `/${normalized}`;
+  const matches = allFiles.filter((file) => file.endsWith(suffix));
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+/** Return whether a file is in a runner's root and matches an include pattern. */
+function isRunnerIncludeCandidate(filePath: string, runner: E2eRunnerConfig): boolean {
+  const normalizedPath = filePath.replace(/\\/g, '/');
+  const runnerRoot = runner.root.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '') || '.';
+  if (runnerRoot !== '.' && !normalizedPath.startsWith(`${runnerRoot}/`)) {
+    return false;
+  }
+  const relativePath = runnerRoot === '.'
+    ? normalizedPath
+    : normalizedPath.slice(runnerRoot.length + 1);
+  return runner.include.some((pattern) => matchesRunnerGlob(relativePath, pattern));
+}
+
+/**
+ * Get all runners that accept a given file path based on include/exclude/testIgnore patterns.
+ */
+async function getAcceptingRunners(
+  root: string,
+  filePath: string,
+  runners: E2eRunnerConfig[],
+): Promise<E2eRunnerConfig[]> {
+  const accepting: E2eRunnerConfig[] = [];
+  for (const runner of runners) {
+    const normalizedPath = filePath.replace(/\\/g, '/');
+    const runnerRoot = runner.root.replace(/\\/g, '/').replace(/^\.\//, '').replace(/\/$/, '') || '.';
+    const relativePath = runnerRoot === '.'
+      ? normalizedPath
+      : normalizedPath.startsWith(runnerRoot + '/')
+        ? normalizedPath.slice(runnerRoot.length + 1)
+        : normalizedPath;
+    if (runnerRoot !== '.' && !normalizedPath.startsWith(`${runnerRoot}/`)) {
+      continue;
+    }
+    const matchesInclude = runner.include.some((p) => matchesRunnerGlob(relativePath, p));
+    if (!matchesInclude) continue;
+    const matchesExclude = (runner.exclude ?? []).some((p) => matchesRunnerGlob(relativePath, p));
+    if (matchesExclude) continue;
+    const matchesTestIgnore = (runner.testIgnore ?? []).some((p) => matchesRunnerGlob(relativePath, p));
+    if (matchesTestIgnore) continue;
+    accepting.push(runner);
+  }
+  return accepting;
 }
 
 function splitMarkdownCells(line: string): string[] {
@@ -3441,7 +4183,8 @@ function flattenAcCoverage(value: Record<string, unknown>): Array<{ feature: str
 function needsDesktopChainWarning(node: ArtifactNode): boolean {
   const tcFields = asRecord(node.attrs?.tcFields);
   const chainType = String(tcFields['chain_type'] ?? '').trim().toLowerCase();
-  if (chainType === 'frontend_only' || chainType === 'core_only') {
+  if ((chainType && VALID_CHAIN_TYPES.has(chainType) && chainType !== 'desktop_chain')
+    || chainType in DEPRECATED_CHAIN_TYPE_ALIASES) {
     return false;
   }
 

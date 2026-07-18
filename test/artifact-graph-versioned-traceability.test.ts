@@ -10,10 +10,12 @@ import {
   auditVersionLock,
   bootstrapVersionLock,
   buildVersionIndex,
+  getTestFileRunnerLiveness,
+  isTestFileActiveInAnyRunner,
   refreshVersionLock,
   updateVersionLock,
 } from '../src/versioned-traceability.js';
-import { scanArtifacts } from '../src/index.js';
+import { loadConfig, scanArtifacts } from '../src/index.js';
 
 // @scenario S-02 @scenario S-03 @feature ACA2
 const execFileAsync = promisify(execFile);
@@ -775,6 +777,323 @@ related_features: [F-001]
       const refresh = await refreshVersionLock(root, { all: true });
       expect(refresh.addedLocks.some((edgeId) => edgeId.includes('api_contract:API-001'))).toBe(true);
       expect(refresh.postAudit.issues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('isTestFileActiveInAnyRunner returns true for files matching runner include patterns', async () => {
+    const root = join(tmpdir(), `artifact-graph-runner-active-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:
+  runners:
+    - name: "vitest"
+      root: "."
+      include: ["**/*.test.ts", "**/*.spec.ts"]
+      exclude: ["**/node_modules/**"]
+      testIgnore: []
+`);
+      await writeFile(join(root, 'tests/example.test.ts'), `test('example', () => {});
+
+`);
+
+      const isActive = await isTestFileActiveInAnyRunner(root, 'tests/example.test.ts');
+      expect(isActive).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('isTestFileActiveInAnyRunner returns false for files not matching runner include patterns', async () => {
+    const root = join(tmpdir(), `artifact-graph-runner-inactive-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:
+  runners:
+    - name: "vitest"
+      root: "."
+      include: ["**/*.test.ts"]
+      exclude: ["**/node_modules/**"]
+      testIgnore: []
+`);
+      await writeFile(join(root, 'tests/example.spec.ts'), `test('example', () => {});
+
+`);
+
+      const isActive = await isTestFileActiveInAnyRunner(root, 'tests/example.spec.ts');
+      expect(isActive).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('isTestFileActiveInAnyRunner returns false for files matching testIgnore patterns', async () => {
+    const root = join(tmpdir(), `artifact-graph-runner-ignore-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:
+  runners:
+    - name: "vitest"
+      root: "."
+      include: ["**/*.test.ts"]
+      exclude: ["**/node_modules/**"]
+      testIgnore: ["**/ignored/**"]
+`);
+      await mkdir(join(root, 'tests/ignored'), { recursive: true });
+      await writeFile(join(root, 'tests/ignored/example.test.ts'), `test('example', () => {});
+
+`);
+
+      const isActive = await isTestFileActiveInAnyRunner(root, 'tests/ignored/example.test.ts');
+      expect(isActive).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('isTestFileActiveInAnyRunner falls back to legacy behavior when no runners configured', async () => {
+    const root = join(tmpdir(), `artifact-graph-runner-legacy-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), ``);
+      await writeFile(join(root, 'tests/example.test.ts'), `test('example', () => {});
+
+`);
+
+      const isActive = await isTestFileActiveInAnyRunner(root, 'tests/example.test.ts');
+      expect(isActive).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Item 2: runner glob/root/exclude/ignore edge cases', () => {
+  it('matches root-level *.spec.ts file', async () => {
+    const root = join(tmpdir(), `artifact-graph-root-level-${Date.now()}`);
+    try {
+      await mkdir(root, { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "vitest"\n      root: "."\n      include: ["**/*.spec.ts"]\n`);
+      await writeFile(join(root, 'top.spec.ts'), `test('top', () => {});\n`);
+      const isActive = await isTestFileActiveInAnyRunner(root, 'top.spec.ts');
+      expect(isActive).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('matches deeply nested file with ** pattern', async () => {
+    const root = join(tmpdir(), `artifact-graph-deep-nest-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'a/b/c/d'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "pw"\n      root: "."\n      include: ["**/*.spec.ts"]\n`);
+      await writeFile(join(root, 'a/b/c/d/deep.spec.ts'), `test('deep', () => {});\n`);
+      const isActive = await isTestFileActiveInAnyRunner(root, 'a/b/c/d/deep.spec.ts');
+      expect(isActive).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('exclude pattern prevents matching', async () => {
+    const root = join(tmpdir(), `artifact-graph-exclude-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests/generated'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "vitest"\n      root: "."\n      include: ["**/*.test.ts"]\n      exclude: ["**/generated/**"]\n`);
+      await writeFile(join(root, 'tests/generated/auto.test.ts'), `test('auto', () => {});\n`);
+      const isActive = await isTestFileActiveInAnyRunner(root, 'tests/generated/auto.test.ts');
+      expect(isActive).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('testIgnore pattern prevents matching', async () => {
+    const root = join(tmpdir(), `artifact-graph-testIgnore-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests/__skip__'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "vitest"\n      root: "."\n      include: ["**/*.test.ts"]\n      testIgnore: ["**/__skip__/**"]\n`);
+      await writeFile(join(root, 'tests/__skip__/skip.test.ts'), `test('skip', () => {});\n`);
+      const isActive = await isTestFileActiveInAnyRunner(root, 'tests/__skip__/skip.test.ts');
+      expect(isActive).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('file outside runner root is not active', async () => {
+    const root = join(tmpdir(), `artifact-graph-outside-root-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'other'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "pw"\n      root: "tests"\n      include: ["**/*.spec.ts"]\n`);
+      await writeFile(join(root, 'other/outside.spec.ts'), `test('outside', () => {});\n`);
+      const isActive = await isTestFileActiveInAnyRunner(root, 'other/outside.spec.ts');
+      expect(isActive).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('multiple runners: file active if matches any runner', async () => {
+    const root = join(tmpdir(), `artifact-graph-multi-runner-${Date.now()}`);
+    try {
+      await mkdir(join(root, 'tests'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `e2e:\n  runners:\n    - name: "unit"\n      root: "."\n      include: ["**/*.test.ts"]\n      kind: "unit"\n    - name: "e2e"\n      root: "."\n      include: ["**/*.e2e.spec.ts"]\n      kind: "e2e"\n`);
+      await writeFile(join(root, 'tests/unit.test.ts'), `test('unit', () => {});\n`);
+      await writeFile(join(root, 'tests/e2e.e2e.spec.ts'), `test('e2e', () => {});\n`);
+      expect(await isTestFileActiveInAnyRunner(root, 'tests/unit.test.ts')).toBe(true);
+      expect(await isTestFileActiveInAnyRunner(root, 'tests/e2e.e2e.spec.ts')).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('Item 3: version-lock liveness per-lock (6 locks for ignored, 3 for active)', () => {
+  it('does not apply E2E liveness to verifies locks outside every runner discovery scope', async () => {
+    const root = join(tmpdir(), `artifact-graph-liveness-unscoped-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    try {
+      await write(root, 'artifact-graph.config.yaml', `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  test:
+    paths: ["src/**/*.test.ts", "browser/**/*.spec.ts"]
+idPatterns:
+  test: '^.+\\.(test|spec)\\.ts$'
+e2e:
+  runners:
+    - name: browser
+      kind: e2e
+      root: browser
+      include: ["*.spec.ts"]
+`);
+      await write(root, 'artifacts/prd/features/A1.md', `---\nid: A1\ntitle: Feature 1\nstatus: done\nscenarios: [S-01]\n---\n# A1\n`);
+      await write(root, 'artifacts/scenarios/scenarios.md', `## S-01: Scenario 1\n\n**关联功能**: A1\n`);
+      await write(root, 'src/ordinary-unit.test.ts', `// @scenario S-01\ntest('unit', () => {});\n`);
+
+      const lock = await bootstrapVersionLock(root);
+      expect(lock.locks.some((entry) => entry.source.path === 'src/ordinary-unit.test.ts')).toBe(true);
+      const config = await loadConfig(root);
+      expect(await getTestFileRunnerLiveness(root, 'src/ordinary-unit.test.ts', config)).toBe('unscoped');
+      const audit = await auditVersionLock(root, undefined, undefined, config);
+      expect(audit.issues.some((item) => item.message.includes('ordinary-unit.test.ts') && item.message.includes('not active'))).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignored spec file with 6 verifies locks produces 6 liveness findings', async () => {
+    const root = join(tmpdir(), `artifact-graph-liveness-6-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    try {
+      await mkdir(join(root, 'artifacts/prd/features'), { recursive: true });
+      await mkdir(join(root, 'artifacts/scenarios'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  test:
+    paths:
+      - "heimdall/packages/**/*.ts"
+      - "heimdall/packages/**/*.tsx"
+idPatterns:
+  test: '^.+\\.(test\\.)?(spec\\.)?(ts|tsx)$'
+e2e:
+  runners:
+    - name: "vitest"
+      root: "heimdall"
+      include: ["**/*.spec.ts"]
+      testIgnore: []
+`);
+      await writeFile(join(root, 'artifacts/prd/features/A1.md'), `---\nid: A1\ntitle: Feature 1\nstatus: done\nscenarios: [S-01]\n---\n# A1\n`);
+      // Create 6 scenarios to produce 6 distinct verifies edges
+      let scenarioContent = '';
+      for (let i = 1; i <= 6; i++) {
+        scenarioContent += `## S-${String(i).padStart(2, '0')}: Scenario ${i}\n\n**关联功能**: A1\n\n`;
+      }
+      await writeFile(join(root, 'artifacts/scenarios/batch.md'), scenarioContent);
+      // Create the "ignored" spec file with 6 verifies edges to different scenarios
+      let specContent = '';
+      for (let i = 1; i <= 6; i++) {
+        specContent += `// @scenario S-${String(i).padStart(2, '0')}\ntest('rule-${i}', () => {});\n`;
+      }
+      await writeFile(join(root, 'heimdall/packages/rule-filters.spec.ts'), specContent);
+      const lock = await bootstrapVersionLock(root);
+      const ruleFilterLocks = lock.locks.filter((e) => e.source.path.includes('rule-filters.spec.ts'));
+      expect(ruleFilterLocks.length).toBe(6);
+
+      // The test was lockable when created, then the runner configuration excluded it.
+      const configPath = join(root, 'artifact-graph.config.yaml');
+      const activeConfig = await readFile(configPath, 'utf-8');
+      await writeFile(configPath, activeConfig.replace('testIgnore: []', 'testIgnore: ["**/rule-filters.spec.ts"]'));
+
+      // Audit should produce 6 liveness findings for the ignored file
+      const config = await loadConfig(root);
+      const audit = await auditVersionLock(root, undefined, undefined, config);
+      const livenessIssues = audit.issues.filter(
+        (i) => i.message.includes('rule-filters.spec.ts') && i.message.includes('not active in any configured runner')
+      );
+      expect(livenessIssues.length).toBe(6);
+
+      const cleanup = await refreshVersionLock(root, { all: true, removeOrphans: true });
+      expect(cleanup.removedOrphans.filter((edgeId) => edgeId.includes('rule-filters.spec.ts'))).toHaveLength(6);
+      expect(cleanup.postAudit.issues).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('active spec file with 3 verifies locks produces 0 liveness findings', async () => {
+    const root = join(tmpdir(), `artifact-graph-liveness-0-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    try {
+      await mkdir(join(root, 'artifacts/prd/features'), { recursive: true });
+      await mkdir(join(root, 'artifacts/scenarios'), { recursive: true });
+      await mkdir(join(root, 'heimdall/packages'), { recursive: true });
+      await writeFile(join(root, 'artifact-graph.config.yaml'), `types:
+  feature:
+    paths: ["artifacts/prd/features/**/*.md"]
+  scenario:
+    paths: ["artifacts/scenarios/**/*.md"]
+  test:
+    paths:
+      - "heimdall/packages/**/*.ts"
+      - "heimdall/packages/**/*.tsx"
+idPatterns:
+  test: '^.+\\.(test\\.)?(spec\\.)?(ts|tsx)$'
+e2e:
+  runners:
+    - name: "vitest"
+      root: "heimdall"
+      include: ["**/*.spec.ts"]
+      testIgnore: ["**/rule-filters.spec.ts"]
+`);
+      await writeFile(join(root, 'artifacts/prd/features/A1.md'), `---\nid: A1\ntitle: Feature 1\nstatus: done\nscenarios: [S-01]\n---\n# A1\n`);
+      // Create 3 scenarios for 3 distinct verifies edges
+      let scenarioContent = '';
+      for (let i = 1; i <= 3; i++) {
+        scenarioContent += `## S-${String(i).padStart(2, '0')}: Scenario ${i}\n\n**关联功能**: A1\n\n`;
+      }
+      await writeFile(join(root, 'artifacts/scenarios/batch.md'), scenarioContent);
+      // Create an ACTIVE spec file (not in testIgnore) with 3 verifies edges
+      let specContent = '';
+      for (let i = 1; i <= 3; i++) {
+        specContent += `// @scenario S-${String(i).padStart(2, '0')}\ntest('active-${i}', () => {});\n`;
+      }
+      await writeFile(join(root, 'heimdall/packages/active-check.spec.ts'), specContent);
+      const lock = await bootstrapVersionLock(root);
+      const activeLocks = lock.locks.filter((e) => e.source.path.includes('active-check.spec.ts'));
+      expect(activeLocks.length).toBe(3);
+
+      const config = await loadConfig(root);
+      const audit = await auditVersionLock(root, undefined, undefined, config);
+      const livenessIssues = audit.issues.filter(
+        (i) => i.message.includes('active-check.spec.ts') && i.message.includes('not active in any configured runner')
+      );
+      expect(livenessIssues.length).toBe(0);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

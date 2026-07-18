@@ -559,7 +559,7 @@ interface VersionLockRefreshResult {
     warnings: string[];
 }
 declare function buildVersionIndex(root: string, graph?: ArtifactGraph): Promise<VersionIndex>;
-declare function auditVersionLock(root: string, lockPath?: string, graph?: ArtifactGraph): Promise<VersionLockAuditResult>;
+declare function auditVersionLock(root: string, lockPath?: string, graph?: ArtifactGraph, config?: ArtifactSchema): Promise<VersionLockAuditResult>;
 declare function updateVersionLock(root: string, options: VersionLockUpdateOptions): Promise<VersionLockFile>;
 declare function bootstrapVersionLock(root: string, options?: VersionLockBootstrapOptions): Promise<VersionLockFile>;
 declare function refreshVersionLock(root: string, options?: VersionLockRefreshOptions): Promise<VersionLockRefreshResult>;
@@ -845,6 +845,26 @@ interface ArtifactEdgeRule {
     to: string;
     kind: string;
 }
+/** E2E test runner configuration */
+interface E2eRunnerConfig {
+    /** Runner name (e.g., 'playwright', 'vitest', 'jest') */
+    name: string;
+    /** Test kind accepted by this runner: 'unit', 'integration', or 'e2e' */
+    kind?: 'unit' | 'integration' | 'e2e';
+    /** Root directory for test discovery (relative to project root) */
+    root: string;
+    /** Include glob patterns for test files */
+    include: string[];
+    /** Exclude glob patterns for test files */
+    exclude?: string[];
+    /** Test ignore patterns (files that should not be considered as tests) */
+    testIgnore?: string[];
+}
+/** Waiver entry with mandatory reason */
+interface E2eWaiver {
+    id: string;
+    reason: string;
+}
 interface ArtifactSchema {
     types: Record<string, ArtifactTypeSchema>;
     idPatterns: Record<string, string>;
@@ -861,6 +881,23 @@ interface ArtifactSchema {
     context?: {
         /** When false, skip universal baseline injection. Default: true. */
         universal_baseline?: boolean;
+    };
+    /** E2E coverage proof configuration */
+    e2e?: {
+        /** Minimum executable_ref coverage rate (0-1) for warning */
+        executable_ref_warning?: number;
+        /** Minimum executable_ref coverage rate (0-1) for error */
+        executable_ref_error?: number;
+        /** Whether to report uncovered scenarios. Default true. */
+        report_uncovered_scenarios?: boolean;
+        /** Whether to report uncovered features. Default true. */
+        report_uncovered_features?: boolean;
+        /** Scenario waivers (id + reason) from coverage requirements */
+        scenario_waivers?: E2eWaiver[];
+        /** Feature waivers (id + reason) from coverage requirements */
+        feature_waivers?: E2eWaiver[];
+        /** E2E test runner configurations */
+        runners?: E2eRunnerConfig[];
     };
 }
 declare const TARGET_ARTIFACT_TYPES: readonly ["feature", "scenario", "decision", "design", "e2e_test"];
@@ -968,7 +1005,88 @@ declare function queryGraph(graph: ArtifactGraph, options: QueryOptions): Artifa
 declare function renderMermaid(graph: ArtifactGraph): string;
 declare function nextId(graph: ArtifactGraph, schema: ArtifactSchema, type: string, rangeName: string): string;
 declare function writeGraphCache(root: string, graph: ArtifactGraph): Promise<void>;
-declare function validateExecutableTraceability(root: string): Promise<ValidationIssue[]>;
+declare function validateExecutableTraceability(root: string, config?: ArtifactSchema): Promise<ValidationIssue[]>;
+/** O2: E2E coverage statistics and blackhole diagnostics */
+interface E2eCoverageStats {
+    totalTestCases: number;
+    withExecutableRef: number;
+    executableRefRate: string;
+    /** TCs by status */
+    statusBreakdown: Record<string, number>;
+    /** TCs by chain_type */
+    chainTypeBreakdown: Record<string, number>;
+    /** Scenarios with zero E2E coverage */
+    uncoveredScenarios: string[];
+    /** Features with zero E2E coverage */
+    uncoveredFeatures: string[];
+    /** Configurable thresholds */
+    thresholdWarnings: string[];
+    thresholdErrors: string[];
+    /** Derived ac_coverage_rate per feature */
+    acCoverageRateByFeature: Record<string, {
+        numerator: number;
+        denominator: number;
+        rate: number;
+    }>;
+    /** Multi-dimensional scenario coverage */
+    scenarioCoverage: Record<string, {
+        linked: boolean;
+        acCovered: boolean;
+        waived: boolean;
+        verified: boolean;
+    }>;
+    /** Multi-dimensional feature coverage */
+    featureCoverage: Record<string, {
+        linked: boolean;
+        acCovered: boolean;
+        waived: boolean;
+        verified: boolean;
+    }>;
+}
+interface E2eCoverageThresholds {
+    /** Minimum executable_ref coverage rate (0-1). Below this triggers warning. */
+    executableRefWarning?: number;
+    /** Minimum executable_ref coverage rate (0-1). Below this triggers error. */
+    executableRefError?: number;
+    /** Whether to report uncovered scenarios as warnings. Default true. */
+    reportUncoveredScenarios?: boolean;
+    /** Whether to report uncovered features as warnings. Default true. */
+    reportUncoveredFeatures?: boolean;
+    /** Explicit waivers: scenario IDs that are waived from coverage requirements */
+    scenarioWaivers?: E2eWaiver[];
+    /** Explicit waivers: feature IDs that are waived from coverage requirements */
+    featureWaivers?: E2eWaiver[];
+}
+declare function computeE2eCoverageStats(graph: ArtifactGraph, root: string, thresholds?: E2eCoverageThresholds): Promise<E2eCoverageStats>;
+/** O4: Deterministic, idempotent E2E registry generation from Markdown sources */
+interface E2eRegistryBatch {
+    batch_id: string;
+    file: string;
+    scope: string;
+    ac_coverage: Record<string, string[]>;
+    related_scenarios: string[];
+    test_case_count: number;
+    status_summary?: Record<string, number>;
+    /** Batch-level status: 'blocked' when frontmatter fixes_block indicates blocking */
+    status?: string;
+    /** Blocking reasons from frontmatter fixes_block */
+    blocking_reasons?: Record<string, string>;
+}
+interface E2eRegistry {
+    registry_version: string;
+    generated_at: string;
+    total_batches: number;
+    total_test_cases: number;
+    batches: E2eRegistryBatch[];
+}
+/**
+ * Generate E2E registry from Markdown test files.
+ * Deterministic: same input always produces same output (except generated_at).
+ * Use `--deterministic` to set generated_at to epoch for idempotent diff checks.
+ */
+declare function generateE2eRegistry(root: string, opts?: {
+    deterministic?: boolean;
+}): Promise<E2eRegistry>;
 interface DiscoverOptions {
     limit?: number;
     schema?: ArtifactSchema;
@@ -987,4 +1105,4 @@ declare function discoverTargets(graph: ArtifactGraph, options?: DiscoverOptions
 declare function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOptions): ContextManifest;
 declare function formatContextMarkdown(manifest: ContextManifest): string;
 
-export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type BatchDefinition, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type Evidence, type EvidenceObject, type ExecutorType, type Finding, type FindingLocation, type FindingSeverity, type FindingStatus, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PreparedManagedHookBlock, type Producer, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type RepairData, type RepairValidation, type ResolveArtifactGraphCliOptions, type ReviewData, type ReviewDecision, type ReviewMetrics, type ReviewOrderStep, type ReviewResult, type ReviewStatus, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationError, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, nextId, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, validateReviewResult, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, writeGraphCache };
+export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type BatchDefinition, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type E2eCoverageStats, type E2eCoverageThresholds, type E2eRegistry, type E2eRegistryBatch, type E2eRunnerConfig, type E2eWaiver, type Evidence, type EvidenceObject, type ExecutorType, type Finding, type FindingLocation, type FindingSeverity, type FindingStatus, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PreparedManagedHookBlock, type Producer, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type RepairData, type RepairValidation, type ResolveArtifactGraphCliOptions, type ReviewData, type ReviewDecision, type ReviewMetrics, type ReviewOrderStep, type ReviewResult, type ReviewStatus, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationError, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, computeE2eCoverageStats, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, generateE2eRegistry, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, nextId, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, validateReviewResult, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, writeGraphCache };
