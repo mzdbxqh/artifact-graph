@@ -21,13 +21,13 @@ npm install --save-dev artifact-graph
 ### From GitHub
 
 ```bash
-npm install --save-dev github:mzdbxqh/artifact-graph
+npm install --save-dev github:ifoohoo/artifact-graph
 ```
 
 Or with pnpm:
 
 ```bash
-pnpm add -D github:mzdbxqh/artifact-graph
+pnpm add -D github:ifoohoo/artifact-graph
 ```
 
 After installation, verify the CLI is available:
@@ -171,5 +171,5 @@ packet validation (`validatePacket`) correctly allows `requiredBaseline.total=0`
 
 ## Related Project
 
-Use [`artifact-chain-assistant`](https://github.com/mzdbxqh/artifact-chain-assistant) for Codex and
+Use [`artifact-chain-assistant`](https://github.com/ifoohoo/artifact-chain-assistant) for Codex and
 Claude Code skills that guide artifact-chain intake, setup, and maintenance.

@@ -178,6 +178,109 @@ async function smokeSchemaSubpath(consumerDir) {
   console.log('  schema subpath import: OK');
 }
 
+async function smokeContractList(consumerDir) {
+  const result = await command('npx', ['--no-install', 'artifact-graph', 'contract', 'list', '--format', 'json'], { cwd: consumerDir });
+  assert.equal(result.code, 0, `contract list exit ${result.code}: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, true, 'contract list envelope not ok');
+  assert.ok(Array.isArray(parsed.data.contracts), 'contract list missing contracts array');
+  assert.ok(parsed.data.contracts.length > 0, 'contract list has no contracts');
+  console.log('  contract list --format json: OK');
+}
+
+async function smokeContractExplain(consumerDir) {
+  const result = await command('npx', ['--no-install', 'artifact-graph', 'contract', 'explain', '--contract', 'artifact.e2e-test@1', '--format', 'json'], { cwd: consumerDir });
+  assert.equal(result.code, 0, `contract explain exit ${result.code}: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, true, 'contract explain envelope not ok');
+  assert.ok(parsed.data.identity !== undefined, 'contract explain missing identity');
+  assert.ok(parsed.data.schema !== undefined, 'contract explain missing schema');
+  assert.equal(parsed.data.identity.major, 'artifact.e2e-test@1', 'contract explain wrong major');
+  console.log('  contract explain --format json: OK');
+}
+
+async function smokeContractValidate(consumerDir) {
+  // Valid data should pass
+  const validData = JSON.stringify({
+    metadata: { id: 'batch-1:TC-001', title: 'Test', status: 'planned' },
+    scope: { business_goal: 'Test', actors: ['user'] },
+    system_boundary: { components: ['comp1'] },
+    coverage: {},
+    environment_data: {},
+    relations: [
+      { kind: 'derives_from', target_type: 'scenario', target_id: 'S-12' },
+      { kind: 'verifies', target_type: 'feature', target_id: 'ACA11', anchor: 'AC1' },
+    ],
+    test_cases: [{
+      case_id: 'TC-001',
+      goal: 'Test',
+      preconditions: ['Pre'],
+      actions: [{ step: 1, action: 'Act' }],
+      oracles: [{ observable: 'Obs', criterion: 'Crit' }],
+      cleanup: [],
+      priority: 'critical',
+      trace_targets: ['S-12'],
+    }],
+    evidence_contract: { required_artifacts: ['artifact1'] },
+  });
+  const result = await command('npx', ['--no-install', 'artifact-graph', 'contract', 'validate', '--contract', 'artifact.e2e-test@1', '--data', validData, '--format', 'json'], { cwd: consumerDir });
+  assert.equal(result.code, 0, `contract validate exit ${result.code}: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, true, 'contract validate should be ok');
+  assert.equal(parsed.data.valid, true, 'contract validate should be valid');
+  console.log('  contract validate valid data: OK');
+
+  // Invalid data should fail
+  const invalidData = JSON.stringify({ metadata: { id: 'INVALID' } });
+  const result2 = await command('npx', ['--no-install', 'artifact-graph', 'contract', 'validate', '--contract', 'artifact.e2e-test@1', '--data', invalidData, '--format', 'json'], { cwd: consumerDir });
+  assert.equal(result2.code, 1, `contract validate invalid should exit 1, got ${result2.code}`);
+  const parsed2 = JSON.parse(result2.stdout);
+  assert.equal(parsed2.ok, false, 'contract validate invalid should not be ok');
+  assert.ok(parsed2.errors.length > 0, 'contract validate invalid should have errors');
+  console.log('  contract validate invalid data: OK');
+}
+
+async function smokeContractNormalize(consumerDir) {
+  const legacyData = JSON.stringify({
+    id: 'batch-1:TC-001',
+    title: 'Test',
+    status: 'planned',
+    test_batch: 'batch-1',
+    scope: 'Test scope',
+    actors: ['user'],
+    system_boundaries: ['boundary'],
+    test_cases: [{
+      case_id: 'TC-001',
+      goal: 'Goal',
+      preconditions: ['Pre'],
+      actions: [{ step: 1, action: 'Act' }],
+      oracles: [{ observable: 'Obs', criterion: 'Crit' }],
+      cleanup: [],
+      priority: 'critical',
+      trace_targets: ['S-12'],
+    }],
+    relations: [
+      { kind: 'derives_from', target_type: 'scenario', target_id: 'S-12' },
+      { kind: 'verifies', target_type: 'feature', target_id: 'ACA11', anchor: 'AC1' },
+    ],
+    ac_coverage: { ACA11: ['AC1'] },
+    related_scenarios: ['S-12'],
+    topology: 'docker-compose',
+    fixtures: ['test-user-db'],
+    isolation_strategy: 'per-test',
+    required_artifacts: ['auth-service-logs'],
+    runner_binding: 'playwright',
+  });
+  const result = await command('npx', ['--no-install', 'artifact-graph', 'contract', 'normalize', '--contract', 'artifact.e2e-test@1', '--data', legacyData, '--format', 'json'], { cwd: consumerDir });
+  assert.equal(result.code, 0, `contract normalize exit ${result.code}: ${result.stderr}`);
+  const parsed = JSON.parse(result.stdout);
+  assert.equal(parsed.ok, true, 'contract normalize envelope not ok');
+  assert.equal(parsed.data.success, true, 'contract normalize should succeed');
+  assert.ok(parsed.data.ir !== undefined, 'contract normalize missing ir');
+  assert.equal(parsed.data.ir.sourceRevision, 'legacy', 'contract normalize wrong sourceRevision');
+  console.log('  contract normalize: OK');
+}
+
 // --- Main ---
 
 const testRoot = await mkdtemp(join(tmpdir(), 'artifact-graph-npm-consumer-'));
@@ -195,5 +298,9 @@ await smokeValidateJson(consumerDir);
 await smokeDoctorJson(consumerDir);
 await smokeImport(consumerDir);
 await smokeSchemaSubpath(consumerDir);
+await smokeContractList(consumerDir);
+await smokeContractExplain(consumerDir);
+await smokeContractValidate(consumerDir);
+await smokeContractNormalize(consumerDir);
 
 console.log('\npacked npm consumer: all smoke checks passed');

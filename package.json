@@ -1,6 +1,6 @@
 {
   "name": "artifact-graph",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Git-native Markdown artifact graph scanner and validator",
   "license": "Apache-2.0",
   "type": "module",
@@ -29,7 +29,8 @@
         "default": "./dist/index.cjs"
       }
     },
-    "./schemas/review-result.schema.json": "./schemas/review-result.schema.json"
+    "./schemas/review-result.schema.json": "./schemas/review-result.schema.json",
+    "./contracts/e2e-test/schema.json": "./contracts/e2e-test/schema.json"
   },
   "engines": {
     "node": ">=22.0.0"
@@ -46,6 +47,7 @@
     "packet:prompt-audit": "node scripts/run-packet-prompt-audit.mjs"
   },
   "dependencies": {
+    "ajv": "^8.20.0",
     "better-sqlite3": "^11.9.0",
     "commander": "^13.1.0",
     "gray-matter": "^4.0.3",
@@ -55,7 +57,6 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.19.20",
-    "ajv": "^8.20.0",
     "tsup": "^8.4.0",
     "typescript": "^5.7.0",
     "vitest": "^3.1.0"
@@ -69,17 +70,22 @@
     "INSTALL.md",
     "dist",
     "schemas",
+    "contracts",
     "scripts",
     "templates"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mzdbxqh/artifact-graph.git"
+    "url": "git+https://github.com/ifoohoo/artifact-graph.git"
   },
   "bugs": {
-    "url": "https://github.com/mzdbxqh/artifact-graph/issues"
+    "url": "https://github.com/ifoohoo/artifact-graph/issues"
   },
-  "homepage": "https://github.com/mzdbxqh/artifact-graph#readme",
+  "homepage": "https://github.com/ifoohoo/artifact-graph#readme",
+  "author": "广州市风荷科技有限公司",
+  "contributors": [
+    "mzdbxqh"
+  ],
   "pnpm": {
     "onlyBuiltDependencies": [
       "better-sqlite3",

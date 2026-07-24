@@ -1,57 +1,55 @@
 #!/usr/bin/env node
-
-// src/cli.ts
-import yaml2 from "js-yaml";
-import { realpathSync } from "fs";
-import { access as access2, mkdir as mkdir6, readFile as readFile3, writeFile as writeFile5 } from "fs/promises";
-import { isAbsolute as isAbsolute4, join as join7 } from "path";
-import { fileURLToPath } from "url";
-
-// src/index.ts
-import Database from "better-sqlite3";
-import matter from "gray-matter";
-import yaml from "js-yaml";
-import { accessSync, constants as fsConstants, existsSync as existsSync2, statSync } from "fs";
-import { mkdir as mkdir4, readFile as readFile2, readdir, writeFile as writeFile3 } from "fs/promises";
-import { basename as basename2, dirname as dirname3, extname, isAbsolute as isAbsolute3, join as join5, relative as relative2, resolve as resolve3 } from "path";
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 
 // src/packet-constants.ts
-var ALWAYS_PRESENT_ITEMS = [
-  { path: "AGENTS.md", reason: "project agent instructions" },
-  { path: "CLAUDE.md", reason: "project instructions" },
-  { path: "artifacts/artifact-chain-spec.md", reason: "artifact chain specification" },
-  { path: "artifacts/blueprints/generation-packet-spec.md", reason: "generation packet spec" },
-  { path: "artifacts/blueprints/implementation-blueprint.md", reason: "implementation blueprint" },
-  { path: "artifacts/contracts/interface-contracts.md", reason: "interface contracts" },
-  { path: "artifacts/contracts/data-contracts.md", reason: "data contracts" },
-  { path: "artifacts/contracts/application-state-machines.md", reason: "application state machines" },
-  { path: "artifacts/contracts/error-model.md", reason: "error model" },
-  { path: "artifacts/contracts/report-contracts.md", reason: "report contracts" },
-  { path: "artifacts/contracts/ui-flow-contracts.md", reason: "UI flow contracts" },
-  { path: "artifacts/contracts/non-functional-budgets.md", reason: "non-functional budgets" },
-  { path: "artifacts/domain/domain-glossary.md", reason: "domain glossary" },
-  { path: "artifacts/domain/bounded-context-map.md", reason: "bounded context map" },
-  { path: "artifacts/domain/domain-invariants.md", reason: "domain invariants" },
-  { path: "artifacts/tests/rule-golden-cases.md", reason: "rule golden cases" },
-  { path: "artifacts/tests/verification-fixtures.md", reason: "verification fixtures" },
-  { path: "artifacts/design/test-strategy.md", reason: "test strategy" },
-  { path: "artifacts/traceability-matrix-v2.md", reason: "traceability matrix" }
-];
-var BASELINE_ITEMS_COUNT = ALWAYS_PRESENT_ITEMS.length;
-var BASELINE_CONSTRAINTS = [
-  { id: "C-ARCH-01", description: "\u6280\u672F\u6808\u5FC5\u987B\u4E3A TypeScript \u5168\u6808", source: "artifacts/decisions/D-ARCH-01.md" },
-  { id: "C-ARCH-03", description: "\u4E0D\u53EF\u5728 Quick Check \u8DEF\u5F84\u5F15\u5165 LLM", source: "artifacts/decisions/D-ARCH-03.md" },
-  { id: "C-ARCH-05", description: "\u4EA7\u54C1\u5F62\u6001\u4E3A Tauri v2 \u684C\u9762\u5E94\u7528\uFF0C\u4E0D\u4F7F\u7528\u5DF2\u5E9F\u5F03\u7684 Web Dashboard", source: "artifacts/decisions/D-ARCH-05.md" },
-  { id: "C-RULE-01", description: "SEC severity \u4E0D\u5141\u8BB8\u964D\u7EA7", source: "artifacts/decisions/D-RULE-01.md" },
-  { id: "C-GEN-01", description: "\u5B9E\u73B0\u84DD\u56FE\u4E0D\u5F97\u5F15\u5165 PRD \u4E2D\u672A\u51FA\u73B0\u7684\u65B0\u529F\u80FD", source: "artifacts/blueprints/implementation-blueprint.md" },
-  { id: "C-GEN-02", description: "\u6587\u4EF6\u53D8\u66F4\u5FC5\u987B\u5148\u68C0\u67E5 interface-contracts\u3001data-contracts\u3001error-model \u662F\u5426\u9700\u8981\u540C\u6B65", source: "artifacts/blueprints/implementation-blueprint.md" },
-  { id: "C-GEN-03", description: "\u4E0D\u5F97\u5C06\u5E9F\u5F03 Web Dashboard \u8BBE\u8BA1\u4F5C\u4E3A\u5B9E\u73B0\u4F9D\u636E", source: "artifacts/blueprints/implementation-blueprint.md" }
-];
-var BASELINE_CONSTRAINTS_COUNT = BASELINE_CONSTRAINTS.length;
+var ALWAYS_PRESENT_ITEMS, BASELINE_ITEMS_COUNT, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT;
+var init_packet_constants = __esm({
+  "src/packet-constants.ts"() {
+    "use strict";
+    ALWAYS_PRESENT_ITEMS = [
+      { path: "AGENTS.md", reason: "project agent instructions" },
+      { path: "CLAUDE.md", reason: "project instructions" },
+      { path: "artifacts/artifact-chain-spec.md", reason: "artifact chain specification" },
+      { path: "artifacts/blueprints/generation-packet-spec.md", reason: "generation packet spec" },
+      { path: "artifacts/blueprints/implementation-blueprint.md", reason: "implementation blueprint" },
+      { path: "artifacts/contracts/interface-contracts.md", reason: "interface contracts" },
+      { path: "artifacts/contracts/data-contracts.md", reason: "data contracts" },
+      { path: "artifacts/contracts/application-state-machines.md", reason: "application state machines" },
+      { path: "artifacts/contracts/error-model.md", reason: "error model" },
+      { path: "artifacts/contracts/report-contracts.md", reason: "report contracts" },
+      { path: "artifacts/contracts/ui-flow-contracts.md", reason: "UI flow contracts" },
+      { path: "artifacts/contracts/non-functional-budgets.md", reason: "non-functional budgets" },
+      { path: "artifacts/domain/domain-glossary.md", reason: "domain glossary" },
+      { path: "artifacts/domain/bounded-context-map.md", reason: "bounded context map" },
+      { path: "artifacts/domain/domain-invariants.md", reason: "domain invariants" },
+      { path: "artifacts/tests/rule-golden-cases.md", reason: "rule golden cases" },
+      { path: "artifacts/tests/verification-fixtures.md", reason: "verification fixtures" },
+      { path: "artifacts/design/test-strategy.md", reason: "test strategy" },
+      { path: "artifacts/traceability-matrix-v2.md", reason: "traceability matrix" }
+    ];
+    BASELINE_ITEMS_COUNT = ALWAYS_PRESENT_ITEMS.length;
+    BASELINE_CONSTRAINTS = [
+      { id: "C-ARCH-01", description: "\u6280\u672F\u6808\u5FC5\u987B\u4E3A TypeScript \u5168\u6808", source: "artifacts/decisions/D-ARCH-01.md" },
+      { id: "C-ARCH-03", description: "\u4E0D\u53EF\u5728 Quick Check \u8DEF\u5F84\u5F15\u5165 LLM", source: "artifacts/decisions/D-ARCH-03.md" },
+      { id: "C-ARCH-05", description: "\u4EA7\u54C1\u5F62\u6001\u4E3A Tauri v2 \u684C\u9762\u5E94\u7528\uFF0C\u4E0D\u4F7F\u7528\u5DF2\u5E9F\u5F03\u7684 Web Dashboard", source: "artifacts/decisions/D-ARCH-05.md" },
+      { id: "C-RULE-01", description: "SEC severity \u4E0D\u5141\u8BB8\u964D\u7EA7", source: "artifacts/decisions/D-RULE-01.md" },
+      { id: "C-GEN-01", description: "\u5B9E\u73B0\u84DD\u56FE\u4E0D\u5F97\u5F15\u5165 PRD \u4E2D\u672A\u51FA\u73B0\u7684\u65B0\u529F\u80FD", source: "artifacts/blueprints/implementation-blueprint.md" },
+      { id: "C-GEN-02", description: "\u6587\u4EF6\u53D8\u66F4\u5FC5\u987B\u5148\u68C0\u67E5 interface-contracts\u3001data-contracts\u3001error-model \u662F\u5426\u9700\u8981\u540C\u6B65", source: "artifacts/blueprints/implementation-blueprint.md" },
+      { id: "C-GEN-03", description: "\u4E0D\u5F97\u5C06\u5E9F\u5F03 Web Dashboard \u8BBE\u8BA1\u4F5C\u4E3A\u5B9E\u73B0\u4F9D\u636E", source: "artifacts/blueprints/implementation-blueprint.md" }
+    ];
+    BASELINE_CONSTRAINTS_COUNT = BASELINE_CONSTRAINTS.length;
+  }
+});
 
 // src/packet-validator.ts
-var MIN_VALIDATION_COMMANDS = 4;
-var VALID_PACKET_TARGET_TYPES = ["feature", "scenario", "decision", "design", "e2e_test"];
 function isPacketTargetType(type) {
   return VALID_PACKET_TARGET_TYPES.includes(type);
 }
@@ -64,7 +62,6 @@ function isPacketTargetTypeDynamic(type, schema) {
   }
   return isPacketTargetType(type);
 }
-var VALID_TARGET_TYPES = [...VALID_PACKET_TARGET_TYPES];
 function validatePacket(packet, schema) {
   const issues = [];
   if (packet.schemaVersion !== "1.0") {
@@ -242,6 +239,16 @@ function validatePacket(packet, schema) {
   const hasError = issues.some((i) => i.severity === "error");
   return { ok: !hasError, issues };
 }
+var MIN_VALIDATION_COMMANDS, VALID_PACKET_TARGET_TYPES, VALID_TARGET_TYPES;
+var init_packet_validator = __esm({
+  "src/packet-validator.ts"() {
+    "use strict";
+    init_packet_constants();
+    MIN_VALIDATION_COMMANDS = 4;
+    VALID_PACKET_TARGET_TYPES = ["feature", "scenario", "decision", "design", "e2e_test"];
+    VALID_TARGET_TYPES = [...VALID_PACKET_TARGET_TYPES];
+  }
+});
 
 // src/glob-matcher.ts
 function matchesRunnerGlob(filePath, pattern) {
@@ -281,6 +288,11 @@ function normalizeGlobValue(value) {
 function escapeRegexCharacter(character) {
   return "\\^$+?.()|{}[]".includes(character) ? String.fromCharCode(92) + character : character;
 }
+var init_glob_matcher = __esm({
+  "src/glob-matcher.ts"() {
+    "use strict";
+  }
+});
 
 // src/target-selector.ts
 function parseTargetSelector(value) {
@@ -290,14 +302,6 @@ function parseTargetSelector(value) {
   }
   return { type: value.slice(0, separator), id: value.slice(separator + 1) };
 }
-var LEGACY_FLAGS = ["feature", "scenario", "decision", "design", "e2e-test"];
-var LEGACY_FLAG_TO_TYPE = {
-  feature: "feature",
-  scenario: "scenario",
-  decision: "decision",
-  design: "design",
-  "e2e-test": "e2e_test"
-};
 function resolveCliTarget(flags, schema) {
   const hasTarget = typeof flags.target === "string";
   const legacyEntries = LEGACY_FLAGS.filter((flag) => typeof flags[flag] === "string").map((flag) => flag);
@@ -330,14 +334,23 @@ function resolveCliTarget(flags, schema) {
     "\u672A\u6307\u5B9A target\uFF1A\u8BF7\u4F7F\u7528 --target <type>:<id> \u6216 --feature/--scenario/--decision/--design/--e2e-test <id>"
   );
 }
+var LEGACY_FLAGS, LEGACY_FLAG_TO_TYPE;
+var init_target_selector = __esm({
+  "src/target-selector.ts"() {
+    "use strict";
+    init_index();
+    LEGACY_FLAGS = ["feature", "scenario", "decision", "design", "e2e-test"];
+    LEGACY_FLAG_TO_TYPE = {
+      feature: "feature",
+      scenario: "scenario",
+      decision: "decision",
+      design: "design",
+      "e2e-test": "e2e_test"
+    };
+  }
+});
 
 // src/packet-assembler.ts
-var DEFAULT_VALIDATION_COMMANDS = [
-  "pnpm build",
-  "pnpm test",
-  "artifact-graph validate --root . --warning-only",
-  "artifact-graph version-lock audit --root . --strict-missing-lock"
-];
 function toPacketItem(item) {
   const pi = {
     path: item.path,
@@ -474,12 +487,6 @@ function renderContextCategory(cat, opts) {
   }
   return lines;
 }
-var COMMAND_COMMENTS = {
-  "pnpm build": "\u6784\u5EFA\u9879\u76EE",
-  "pnpm test": "\u8FD0\u884C\u9879\u76EE\u6D4B\u8BD5",
-  "artifact-graph validate --root . --warning-only": "\u5236\u54C1\u94FE\u4E00\u81F4\u6027\u6821\u9A8C\uFF08warning-only\uFF09",
-  "artifact-graph version-lock audit --root . --strict-missing-lock": "\u5236\u54C1\u94FE\u7248\u672C\u9501\u4E25\u683C\u5BA1\u8BA1"
-};
 function classifyCategories(manifest) {
   let baseline = { category: "baseline", total: 0, items: [] };
   const direct = [];
@@ -776,12 +783,29 @@ function renderPacketMarkdown(packet) {
   lines.push("> \u63D0\u793A\uFF1A\u4F7F\u7528 Ctrl+F \u641C\u7D22 `[\u5FC5\u8BFB]` \u5FEB\u901F\u5B9A\u4F4D\u5FC5\u8BFB\u5236\u54C1\u3002");
   return lines.join("\n");
 }
+var DEFAULT_VALIDATION_COMMANDS, COMMAND_COMMENTS;
+var init_packet_assembler = __esm({
+  "src/packet-assembler.ts"() {
+    "use strict";
+    init_packet_constants();
+    DEFAULT_VALIDATION_COMMANDS = [
+      "pnpm build",
+      "pnpm test",
+      "artifact-graph validate --root . --warning-only",
+      "artifact-graph version-lock audit --root . --strict-missing-lock"
+    ];
+    COMMAND_COMMENTS = {
+      "pnpm build": "\u6784\u5EFA\u9879\u76EE",
+      "pnpm test": "\u8FD0\u884C\u9879\u76EE\u6D4B\u8BD5",
+      "artifact-graph validate --root . --warning-only": "\u5236\u54C1\u94FE\u4E00\u81F4\u6027\u6821\u9A8C\uFF08warning-only\uFF09",
+      "artifact-graph version-lock audit --root . --strict-missing-lock": "\u5236\u54C1\u94FE\u7248\u672C\u9501\u4E25\u683C\u5BA1\u8BA1"
+    };
+  }
+});
 
 // src/packet-audit.ts
 import { mkdir, writeFile } from "fs/promises";
 import { join } from "path";
-var VALID_TYPES = new Set(VALID_PACKET_TARGET_TYPES);
-var VALID_TYPES_LABEL = VALID_PACKET_TARGET_TYPES.join(", ");
 function parseTargetsFile(content, schema) {
   const validTypes = schema ? new Set(getTargetArtifactTypes(schema)) : VALID_TYPES;
   const validTypesLabel = [...validTypes].join(", ");
@@ -979,20 +1003,21 @@ async function discoverAndAuditPackets(root, options) {
     universalBaseline: effectiveBaseline
   }, graph);
 }
+var VALID_TYPES, VALID_TYPES_LABEL;
+var init_packet_audit = __esm({
+  "src/packet-audit.ts"() {
+    "use strict";
+    init_index();
+    init_packet_validator();
+    VALID_TYPES = new Set(VALID_PACKET_TARGET_TYPES);
+    VALID_TYPES_LABEL = VALID_PACKET_TARGET_TYPES.join(", ");
+  }
+});
 
 // src/packet-prompt.ts
-var TYPE_CLI_FLAG = {
-  feature: "feature",
-  scenario: "scenario",
-  decision: "decision",
-  design: "design",
-  e2e_test: "e2e-test"
-};
 function cliFlag(type) {
   return TYPE_CLI_FLAG[type] ?? type;
 }
-var DEFAULT_MAX_CHARS = 4e3;
-var MIN_PROMPT_CHARS = 320;
 function renderPromptHeader(packet) {
   const t = packet.target;
   const typeLabelMap = { feature: "\u529F\u80FD", scenario: "\u573A\u666F", decision: "\u51B3\u7B56", design: "\u8BBE\u8BA1\u89C4\u683C", e2e_test: "E2E \u6D4B\u8BD5" };
@@ -1216,52 +1241,24 @@ function renderPacketPrompt(packet, options) {
     minRequired: absMinText.length
   };
 }
+var TYPE_CLI_FLAG, DEFAULT_MAX_CHARS, MIN_PROMPT_CHARS;
+var init_packet_prompt = __esm({
+  "src/packet-prompt.ts"() {
+    "use strict";
+    init_packet_constants();
+    TYPE_CLI_FLAG = {
+      feature: "feature",
+      scenario: "scenario",
+      decision: "decision",
+      design: "design",
+      e2e_test: "e2e-test"
+    };
+    DEFAULT_MAX_CHARS = 4e3;
+    MIN_PROMPT_CHARS = 320;
+  }
+});
 
 // src/packet-prompt-validator.ts
-var REQUIRED_CHECKS = [
-  {
-    code: "PP-001",
-    description: "\u76EE\u6807\u4FE1\u606F",
-    test: (t) => /实现任务/.test(t),
-    severity: "error"
-  },
-  {
-    code: "PP-002",
-    description: "packet \u547D\u4EE4\u6216\u6765\u6E90\u5F15\u7528",
-    test: (t) => /packet\s+--root/.test(t) || /packet\.json/.test(t) || /artifact-graph\s+packet/.test(t),
-    severity: "error"
-  },
-  {
-    code: "PP-003",
-    description: "\u9A8C\u8BC1\u547D\u4EE4",
-    test: (t) => /验证命令/.test(t) || /artifact-graph\s+(build|test)/.test(t),
-    severity: "error"
-  },
-  {
-    code: "PP-004",
-    description: "\u63D0\u4EA4\u8981\u6C42",
-    test: (t) => /提交要求/.test(t) || /git\s+diff\s+--check/.test(t),
-    severity: "error"
-  },
-  {
-    code: "PP-005",
-    description: "\u7981\u6B62\u4E8B\u9879",
-    test: (t) => /禁止事项/.test(t),
-    severity: "error"
-  },
-  {
-    code: "PP-006",
-    description: "\u4E0D\u5F97\u56DE\u9000\u89C4\u5219",
-    test: (t) => /不得回退/.test(t) || /不要回退/.test(t) || /no[- ]?revert/i.test(t),
-    severity: "error"
-  },
-  {
-    code: "PP-007",
-    description: "SEC severity \u89C4\u5219",
-    test: (t) => /SEC\s+severity/.test(t) || /severity/.test(t) && /降级/.test(t),
-    severity: "error"
-  }
-];
 function checkChineseDominance(text) {
   const textOutsideCode = text.replace(/```[\s\S]*?```/g, "");
   const cleanText = textOutsideCode.replace(/^[#>]+ .*$/gm, "").replace(/\[.*?\]\(.*?\)/g, "");
@@ -1296,15 +1293,62 @@ function validatePacketPrompt(prompt) {
   const hasErrors = issues.some((i) => i.severity === "error");
   return { ok: !hasErrors, issues };
 }
+var REQUIRED_CHECKS;
+var init_packet_prompt_validator = __esm({
+  "src/packet-prompt-validator.ts"() {
+    "use strict";
+    REQUIRED_CHECKS = [
+      {
+        code: "PP-001",
+        description: "\u76EE\u6807\u4FE1\u606F",
+        test: (t) => /实现任务/.test(t),
+        severity: "error"
+      },
+      {
+        code: "PP-002",
+        description: "packet \u547D\u4EE4\u6216\u6765\u6E90\u5F15\u7528",
+        test: (t) => /packet\s+--root/.test(t) || /packet\.json/.test(t) || /artifact-graph\s+packet/.test(t),
+        severity: "error"
+      },
+      {
+        code: "PP-003",
+        description: "\u9A8C\u8BC1\u547D\u4EE4",
+        test: (t) => /验证命令/.test(t) || /artifact-graph\s+(build|test)/.test(t),
+        severity: "error"
+      },
+      {
+        code: "PP-004",
+        description: "\u63D0\u4EA4\u8981\u6C42",
+        test: (t) => /提交要求/.test(t) || /git\s+diff\s+--check/.test(t),
+        severity: "error"
+      },
+      {
+        code: "PP-005",
+        description: "\u7981\u6B62\u4E8B\u9879",
+        test: (t) => /禁止事项/.test(t),
+        severity: "error"
+      },
+      {
+        code: "PP-006",
+        description: "\u4E0D\u5F97\u56DE\u9000\u89C4\u5219",
+        test: (t) => /不得回退/.test(t) || /不要回退/.test(t) || /no[- ]?revert/i.test(t),
+        severity: "error"
+      },
+      {
+        code: "PP-007",
+        description: "SEC severity \u89C4\u5219",
+        test: (t) => /SEC\s+severity/.test(t) || /severity/.test(t) && /降级/.test(t),
+        severity: "error"
+      }
+    ];
+  }
+});
 
 // src/versioned-traceability.ts
 import { createHash } from "crypto";
 import { existsSync } from "fs";
 import { mkdir as mkdir2, readFile, writeFile as writeFile2 } from "fs/promises";
 import { dirname, join as join2, relative } from "path";
-var VERSION_LOCK_PATH = "artifacts/traceability-version-lock.json";
-var VERSION_INDEX_SCHEMA_VERSION = "1.0";
-var VERSION_LOCK_SCHEMA_VERSION = "1.0";
 async function buildVersionIndex(root, graph) {
   const scannedGraph = graph ?? await scanArtifacts(root);
   const hashCache = /* @__PURE__ */ new Map();
@@ -2104,6 +2148,17 @@ async function isFileActiveInRunner(root, filePath, runner) {
 function sortUnique(items) {
   return [...new Set(items)].sort((left, right) => left.localeCompare(right));
 }
+var VERSION_LOCK_PATH, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_SCHEMA_VERSION;
+var init_versioned_traceability = __esm({
+  "src/versioned-traceability.ts"() {
+    "use strict";
+    init_index();
+    init_glob_matcher();
+    VERSION_LOCK_PATH = "artifacts/traceability-version-lock.json";
+    VERSION_INDEX_SCHEMA_VERSION = "1.0";
+    VERSION_LOCK_SCHEMA_VERSION = "1.0";
+  }
+});
 
 // src/cli-resolver.ts
 import { execFile } from "child_process";
@@ -2111,27 +2166,6 @@ import { constants } from "fs";
 import { access } from "fs/promises";
 import { isAbsolute, join as join3, resolve } from "path";
 import { promisify } from "util";
-var execFileAsync = promisify(execFile);
-var KNOWN_COMMANDS = [
-  "init",
-  "scan",
-  "validate",
-  "query",
-  "context",
-  "packet",
-  "packet-prompt",
-  "packet-audit",
-  "packet-prompt-audit",
-  "version-index",
-  "version-lock audit",
-  "version-lock update",
-  "version-lock bootstrap",
-  "version-lock refresh",
-  "trace-version",
-  "next-id",
-  "render",
-  "doctor"
-];
 async function resolveArtifactGraphCli(root, options = {}) {
   const pathCli = await findCommandOnPath("artifact-graph");
   const legacyCliPath = options.projectCliPath ?? process.env.ARTIFACT_GRAPH_LEGACY_CLI;
@@ -2267,11 +2301,38 @@ function isNodeCompatible(version) {
   const major = Number(version.split(".")[0]);
   return Number.isFinite(major) && major >= 22;
 }
+var execFileAsync, KNOWN_COMMANDS;
+var init_cli_resolver = __esm({
+  "src/cli-resolver.ts"() {
+    "use strict";
+    init_versioned_traceability();
+    execFileAsync = promisify(execFile);
+    KNOWN_COMMANDS = [
+      "init",
+      "scan",
+      "validate",
+      "query",
+      "context",
+      "packet",
+      "packet-prompt",
+      "packet-audit",
+      "packet-prompt-audit",
+      "version-index",
+      "version-lock audit",
+      "version-lock update",
+      "version-lock bootstrap",
+      "version-lock refresh",
+      "trace-version",
+      "next-id",
+      "render",
+      "doctor"
+    ];
+  }
+});
 
 // src/git-changes.ts
 import { execFile as execFile2 } from "child_process";
 import { promisify as promisify2 } from "util";
-var execFileAsync2 = promisify2(execFile2);
 async function collectChangedPaths(root, options) {
   const args = gitDiffArgs(options);
   let stdout;
@@ -2281,8 +2342,10 @@ async function collectChangedPaths(root, options) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Unable to collect git changed paths (${options.mode}): ${message}`);
   }
-  const changedPaths = normalizeGitPathList(stdout);
-  const unstagedPaths = options.mode === "staged" ? await collectUnstagedPaths(root) : [];
+  const trackedChangedPaths = normalizeGitPathList(stdout);
+  const untrackedPaths = options.mode === "worktree" || options.mode === "staged" ? await collectUntrackedPaths(root) : [];
+  const changedPaths = options.mode === "worktree" ? sortUnique2([...trackedChangedPaths, ...untrackedPaths]) : trackedChangedPaths;
+  const unstagedPaths = options.mode === "staged" ? sortUnique2([...await collectUnstagedPaths(root), ...untrackedPaths]) : [];
   const stagedUnstagedConflictPaths = options.mode === "staged" ? intersect(changedPaths, unstagedPaths) : [];
   return {
     root,
@@ -2314,6 +2377,14 @@ async function collectUnstagedPaths(root) {
     return [];
   }
 }
+async function collectUntrackedPaths(root) {
+  try {
+    const { stdout } = await execFileAsync2("git", ["ls-files", "--others", "--exclude-standard"], { cwd: root });
+    return normalizeGitPathList(stdout);
+  } catch {
+    return [];
+  }
+}
 function normalizeGitPathList(stdout) {
   return sortUnique2(stdout.split(/\r?\n/).map((line) => line.trim().replace(/\\/g, "/").replace(/^\.\//, "")).filter((line) => line.length > 0 && !line.startsWith("../") && !line.startsWith("/")));
 }
@@ -2324,12 +2395,18 @@ function intersect(left, right) {
 function sortUnique2(items) {
   return [...new Set(items)].sort((left, right) => left.localeCompare(right));
 }
+var execFileAsync2;
+var init_git_changes = __esm({
+  "src/git-changes.ts"() {
+    "use strict";
+    execFileAsync2 = promisify2(execFile2);
+  }
+});
 
 // src/git-hook-path.ts
 import { execFile as execFile3 } from "child_process";
 import { isAbsolute as isAbsolute2, resolve as resolve2 } from "path";
 import { promisify as promisify3 } from "util";
-var execFileAsync3 = promisify3(execFile3);
 async function resolveGitHookPath(root, hookName) {
   const { stdout } = await execFileAsync3("git", [
     "-C",
@@ -2342,74 +2419,19 @@ async function resolveGitHookPath(root, hookName) {
   if (!value) throw new Error(`Git returned an empty hook path for ${hookName}`);
   return isAbsolute2(value) ? resolve2(value) : resolve2(root, value);
 }
+var execFileAsync3;
+var init_git_hook_path = __esm({
+  "src/git-hook-path.ts"() {
+    "use strict";
+    execFileAsync3 = promisify3(execFile3);
+  }
+});
 
 // src/hook-installer.ts
 import { constants as constants2 } from "fs";
 import { randomUUID } from "crypto";
 import { lstat, mkdir as mkdir3, open, readlink, rename, unlink } from "fs/promises";
 import { basename, dirname as dirname2, join as join4 } from "path";
-var DEFAULT_MARKER_ID = "artifact-chain-assistant";
-var MANAGED_STATE_PREFIX = "# artifact-chain-assistant managed state v1:";
-var UnsupportedHookInterpreterError = class extends Error {
-  constructor(hookPath, shebang) {
-    super(
-      `Refusing to modify non-shell Git hook ${hookPath} (${shebang || "missing shebang"}). Call the artifact-chain hook from the existing hook explicitly.`
-    );
-    this.hookPath = hookPath;
-    this.shebang = shebang;
-  }
-  hookPath;
-  shebang;
-  code = "UNSUPPORTED_HOOK_INTERPRETER";
-};
-var SymlinkHookUnsupportedError = class extends Error {
-  constructor(hookPath, linkTarget) {
-    super(
-      `SYMLINK_HOOK_UNSUPPORTED: Refusing to modify Git hook symlink ${hookPath} -> ${linkTarget}. Integrate the artifact-graph commands manually in the symlink target or replace the link yourself.`
-    );
-    this.hookPath = hookPath;
-    this.linkTarget = linkTarget;
-  }
-  hookPath;
-  linkTarget;
-  code = "SYMLINK_HOOK_UNSUPPORTED";
-};
-var UnsupportedHookTypeError = class extends Error {
-  constructor(hookPath) {
-    super(`UNSUPPORTED_HOOK_TYPE: Git hook path ${hookPath} is not a regular file. Resolve it manually before retrying.`);
-    this.hookPath = hookPath;
-  }
-  hookPath;
-  code = "UNSUPPORTED_HOOK_TYPE";
-};
-var InvalidManagedHookStateError = class extends Error {
-  constructor(hookPath, detail) {
-    super(`INVALID_MANAGED_HOOK_STATE: Cannot safely update ${hookPath}: ${detail}`);
-    this.hookPath = hookPath;
-  }
-  hookPath;
-  code = "INVALID_MANAGED_HOOK_STATE";
-};
-var ConcurrentHookModificationError = class extends Error {
-  constructor(hookPath) {
-    super(`Refusing to overwrite concurrently modified Git hook ${hookPath}. Retry the operation after reviewing the hook.`);
-    this.hookPath = hookPath;
-  }
-  hookPath;
-  code = "CONCURRENT_HOOK_MODIFICATION";
-};
-var HookTransactionRollbackError = class extends Error {
-  constructor(operationError, rollbackErrors) {
-    super(
-      `HOOK_TRANSACTION_ROLLBACK_FAILED: Hook update failed and ${rollbackErrors.length} rollback operation(s) also failed: ` + rollbackErrors.map(({ hookPath, error }) => `${hookPath}: ${error.message}`).join("; ")
-    );
-    this.operationError = operationError;
-    this.rollbackErrors = rollbackErrors;
-  }
-  operationError;
-  rollbackErrors;
-  code = "HOOK_TRANSACTION_ROLLBACK_FAILED";
-};
 function detectHookInterpreter(content) {
   if (content.trim().length === 0) {
     return "empty";
@@ -2763,44 +2785,76 @@ function findManagedRange(content, begin, end) {
     end: endLine < 0 ? content.length : endLine + 1
   };
 }
+var DEFAULT_MARKER_ID, MANAGED_STATE_PREFIX, UnsupportedHookInterpreterError, SymlinkHookUnsupportedError, UnsupportedHookTypeError, InvalidManagedHookStateError, ConcurrentHookModificationError, HookTransactionRollbackError;
+var init_hook_installer = __esm({
+  "src/hook-installer.ts"() {
+    "use strict";
+    DEFAULT_MARKER_ID = "artifact-chain-assistant";
+    MANAGED_STATE_PREFIX = "# artifact-chain-assistant managed state v1:";
+    UnsupportedHookInterpreterError = class extends Error {
+      constructor(hookPath, shebang) {
+        super(
+          `Refusing to modify non-shell Git hook ${hookPath} (${shebang || "missing shebang"}). Call the artifact-chain hook from the existing hook explicitly.`
+        );
+        this.hookPath = hookPath;
+        this.shebang = shebang;
+      }
+      hookPath;
+      shebang;
+      code = "UNSUPPORTED_HOOK_INTERPRETER";
+    };
+    SymlinkHookUnsupportedError = class extends Error {
+      constructor(hookPath, linkTarget) {
+        super(
+          `SYMLINK_HOOK_UNSUPPORTED: Refusing to modify Git hook symlink ${hookPath} -> ${linkTarget}. Integrate the artifact-graph commands manually in the symlink target or replace the link yourself.`
+        );
+        this.hookPath = hookPath;
+        this.linkTarget = linkTarget;
+      }
+      hookPath;
+      linkTarget;
+      code = "SYMLINK_HOOK_UNSUPPORTED";
+    };
+    UnsupportedHookTypeError = class extends Error {
+      constructor(hookPath) {
+        super(`UNSUPPORTED_HOOK_TYPE: Git hook path ${hookPath} is not a regular file. Resolve it manually before retrying.`);
+        this.hookPath = hookPath;
+      }
+      hookPath;
+      code = "UNSUPPORTED_HOOK_TYPE";
+    };
+    InvalidManagedHookStateError = class extends Error {
+      constructor(hookPath, detail) {
+        super(`INVALID_MANAGED_HOOK_STATE: Cannot safely update ${hookPath}: ${detail}`);
+        this.hookPath = hookPath;
+      }
+      hookPath;
+      code = "INVALID_MANAGED_HOOK_STATE";
+    };
+    ConcurrentHookModificationError = class extends Error {
+      constructor(hookPath) {
+        super(`Refusing to overwrite concurrently modified Git hook ${hookPath}. Retry the operation after reviewing the hook.`);
+        this.hookPath = hookPath;
+      }
+      hookPath;
+      code = "CONCURRENT_HOOK_MODIFICATION";
+    };
+    HookTransactionRollbackError = class extends Error {
+      constructor(operationError, rollbackErrors) {
+        super(
+          `HOOK_TRANSACTION_ROLLBACK_FAILED: Hook update failed and ${rollbackErrors.length} rollback operation(s) also failed: ` + rollbackErrors.map(({ hookPath, error }) => `${hookPath}: ${error.message}`).join("; ")
+        );
+        this.operationError = operationError;
+        this.rollbackErrors = rollbackErrors;
+      }
+      operationError;
+      rollbackErrors;
+      code = "HOOK_TRANSACTION_ROLLBACK_FAILED";
+    };
+  }
+});
 
 // src/review-result-validator.ts
-var VALID_STATUSES = /* @__PURE__ */ new Set([
-  "SUCCEEDED",
-  "FAILED",
-  "BLOCKED",
-  "NEEDS_INPUT",
-  "SKIPPED"
-]);
-var VALID_DECISIONS = /* @__PURE__ */ new Set([
-  "PASS",
-  "FAIL",
-  "PASS_WITH_RESIDUAL_MINOR",
-  "BLOCKED",
-  "NEEDS_INPUT",
-  "NOT_APPLICABLE"
-]);
-var VALID_SEVERITIES = /* @__PURE__ */ new Set(["block", "warn", "info"]);
-var VALID_FINDING_STATUSES = /* @__PURE__ */ new Set(["open", "resolved", "accepted", "superseded"]);
-var VALID_EXECUTORS = /* @__PURE__ */ new Set(["script", "worker", "agent", "manual", "cli"]);
-var TOP_LEVEL_FIELDS = /* @__PURE__ */ new Set([
-  "schema_version",
-  "run_id",
-  "stage_id",
-  "attempt",
-  "status",
-  "decision",
-  "summary",
-  "outputs",
-  "warnings",
-  "blocking_reason",
-  "degradation",
-  "producer",
-  "acceptance",
-  "evidence",
-  "review",
-  "repair"
-]);
 function validateReviewResult(input) {
   const errors = [];
   if (!input || typeof input !== "object" || Array.isArray(input)) {
@@ -3049,19 +3103,6 @@ function validateBatches(val, path, errors) {
     checkOptionalInteger(b.chars, `${itemPath}.chars`, errors);
   }
 }
-var METRIC_FIELDS = [
-  "files_reviewed",
-  "files_scanned",
-  "findings_count",
-  "deterministic_findings_count",
-  "semantic_findings_count",
-  "block_count",
-  "warn_count",
-  "info_count",
-  "resolved_count",
-  "batch_count",
-  "scenario_count"
-];
 function validateMetrics(val, path, errors) {
   if (!isPlainObject(val)) {
     errors.push({ path, message: "Must be an object" });
@@ -3078,10 +3119,999 @@ function validateRepairValidation(val, path, errors) {
   checkOptionalInteger(val.exit_code, `${path}.exit_code`, errors);
   checkOptionalInteger(val.findings_remaining, `${path}.findings_remaining`, errors, 0);
 }
+var VALID_STATUSES, VALID_DECISIONS, VALID_SEVERITIES, VALID_FINDING_STATUSES, VALID_EXECUTORS, TOP_LEVEL_FIELDS, METRIC_FIELDS;
+var init_review_result_validator = __esm({
+  "src/review-result-validator.ts"() {
+    "use strict";
+    VALID_STATUSES = /* @__PURE__ */ new Set([
+      "SUCCEEDED",
+      "FAILED",
+      "BLOCKED",
+      "NEEDS_INPUT",
+      "SKIPPED"
+    ]);
+    VALID_DECISIONS = /* @__PURE__ */ new Set([
+      "PASS",
+      "FAIL",
+      "PASS_WITH_RESIDUAL_MINOR",
+      "BLOCKED",
+      "NEEDS_INPUT",
+      "NOT_APPLICABLE"
+    ]);
+    VALID_SEVERITIES = /* @__PURE__ */ new Set(["block", "warn", "info"]);
+    VALID_FINDING_STATUSES = /* @__PURE__ */ new Set(["open", "resolved", "accepted", "superseded"]);
+    VALID_EXECUTORS = /* @__PURE__ */ new Set(["script", "worker", "agent", "manual", "cli"]);
+    TOP_LEVEL_FIELDS = /* @__PURE__ */ new Set([
+      "schema_version",
+      "run_id",
+      "stage_id",
+      "attempt",
+      "status",
+      "decision",
+      "summary",
+      "outputs",
+      "warnings",
+      "blocking_reason",
+      "degradation",
+      "producer",
+      "acceptance",
+      "evidence",
+      "review",
+      "repair"
+    ]);
+    METRIC_FIELDS = [
+      "files_reviewed",
+      "files_scanned",
+      "findings_count",
+      "deterministic_findings_count",
+      "semantic_findings_count",
+      "block_count",
+      "warn_count",
+      "info_count",
+      "resolved_count",
+      "batch_count",
+      "scenario_count"
+    ];
+  }
+});
+
+// src/contract-kernel.ts
+var contract_kernel_exports = {};
+__export(contract_kernel_exports, {
+  CONTRACT_ERROR_CODES: () => CONTRACT_ERROR_CODES,
+  ContractCatalog: () => ContractCatalog,
+  ContractError: () => ContractError,
+  ContractRegistry: () => ContractRegistry,
+  E2E_NORMALIZER_CONFIG: () => E2E_NORMALIZER_CONFIG,
+  __AjvCtor: () => __AjvCtor,
+  applyProjectPolicy: () => applyProjectPolicy,
+  canonicalizeForDigest: () => canonicalizeForDigest,
+  computeRevisionDigest: () => computeRevisionDigest,
+  failClosedValidation: () => failClosedValidation,
+  isOfficialNamespace: () => isOfficialNamespace,
+  loadContract: () => loadContract,
+  loadContractCatalog: () => loadContractCatalog,
+  loadContractsFromDirectory: () => loadContractsFromDirectory,
+  normalizeE2eLegacyArtifact: () => normalizeE2eLegacyArtifact,
+  normalizeToCanonical: () => normalizeToCanonical,
+  runContractCli: () => runContractCli,
+  setAjvConstructor: () => setAjvConstructor,
+  validateContractAgainstSchema: () => validateContractAgainstSchema,
+  validateNamespaceAuthority: () => validateNamespaceAuthority,
+  validatePolicyCompatibility: () => validatePolicyCompatibility,
+  validateRelations: () => validateRelations,
+  validateSemanticMarkers: () => validateSemanticMarkers,
+  verifyDigest: () => verifyDigest
+});
+import { createHash as createHash2 } from "crypto";
+import { readFile as readFile2, readdir } from "fs/promises";
+import { join as join5 } from "path";
+import _AjvModule from "ajv";
+function isOfficialNamespace(namespace) {
+  return OFFICIAL_NAMESPACE_PATTERN.test(namespace);
+}
+function validateNamespaceAuthority(identity, expectedAuthority) {
+  if (isOfficialNamespace(identity.namespace) && identity.authority !== OFFICIAL_AUTHORITY) {
+    throw new ContractError(
+      CONTRACT_ERROR_CODES.AUTHORITY_VIOLATION,
+      `Namespace ${identity.namespace} requires authority "${OFFICIAL_AUTHORITY}", got "${identity.authority}"`,
+      { identity, expectedAuthority: OFFICIAL_AUTHORITY }
+    );
+  }
+  if (expectedAuthority && identity.authority !== expectedAuthority) {
+    throw new ContractError(
+      CONTRACT_ERROR_CODES.AUTHORITY_VIOLATION,
+      `Expected authority "${expectedAuthority}", got "${identity.authority}"`,
+      { identity, expectedAuthority }
+    );
+  }
+}
+function canonicalizeForDigest(rawContent) {
+  try {
+    const parsed = JSON.parse(rawContent);
+    if (parsed.contractIdentity && typeof parsed.contractIdentity === "object") {
+      const ci = { ...parsed.contractIdentity };
+      delete ci.revisionDigest;
+      parsed.contractIdentity = ci;
+    }
+    return JSON.stringify(parsed);
+  } catch {
+    return rawContent;
+  }
+}
+function computeRevisionDigest(content) {
+  const canonical = canonicalizeForDigest(content);
+  const hash = createHash2("sha256").update(canonical, "utf-8").digest("hex");
+  return `sha256:${hash}`;
+}
+function verifyDigest(content, expectedDigest) {
+  const actualDigest = computeRevisionDigest(content);
+  return actualDigest === expectedDigest;
+}
+function setNestedValue(obj, path, value) {
+  const parts = path.split(".");
+  let current = obj;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const part = parts[i];
+    if (current[part] === void 0 || typeof current[part] !== "object" || current[part] === null) {
+      current[part] = {};
+    }
+    current = current[part];
+  }
+  current[parts[parts.length - 1]] = value;
+}
+function matchesSchemaType(value, definition) {
+  const type = definition?.type;
+  if (type === "array") return Array.isArray(value);
+  if (type === "object") return typeof value === "object" && value !== null && !Array.isArray(value);
+  if (type === "string") return typeof value === "string";
+  if (type === "number" || type === "integer") return typeof value === "number";
+  if (type === "boolean") return typeof value === "boolean";
+  return value !== void 0;
+}
+function getNestedValue(source, path) {
+  let current = source;
+  for (const part of path.split(".")) {
+    if (typeof current !== "object" || current === null || Array.isArray(current)) return void 0;
+    current = current[part];
+  }
+  return current;
+}
+function valuesEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+function normalizeToCanonical(legacyData, config, contract) {
+  const errors = [];
+  const warnings = [];
+  const legacyFieldMap = /* @__PURE__ */ new Map();
+  for (const mapping of config.fieldMappings) {
+    legacyFieldMap.set(mapping.legacy, mapping.canonical);
+  }
+  const canonical = {};
+  const canonicalRoots = new Set(Object.keys(contract.schema.properties));
+  const presentCanonicalRoots = /* @__PURE__ */ new Set();
+  for (const root of canonicalRoots) {
+    const value = legacyData[root];
+    if (value !== void 0 && matchesSchemaType(value, contract.schema.properties[root])) {
+      canonical[root] = structuredClone(value);
+      presentCanonicalRoots.add(root);
+    }
+  }
+  const unmappedLegacyFields = new Set(
+    Object.keys(legacyData).filter((field) => !presentCanonicalRoots.has(field) && !legacyFieldMap.has(field))
+  );
+  let usedLegacyExpression = false;
+  for (const mapping of config.fieldMappings) {
+    const legacyValue = legacyData[mapping.legacy];
+    const existingCanonicalValue = getNestedValue(canonical, mapping.canonical);
+    if (legacyValue !== void 0 && !presentCanonicalRoots.has(mapping.legacy)) {
+      usedLegacyExpression = true;
+      const canonicalValue = mapping.transform ? mapping.transform(legacyValue) : legacyValue;
+      if (existingCanonicalValue !== void 0) {
+        if (!valuesEqual(existingCanonicalValue, canonicalValue)) {
+          errors.push({
+            code: CONTRACT_ERROR_CODES.CANONICAL_LEGACY_CONFLICT,
+            path: `/${mapping.canonical.replaceAll(".", "/")}`,
+            message: `Canonical field "${mapping.canonical}" conflicts with legacy field "${mapping.legacy}"`
+          });
+        }
+      } else {
+        setNestedValue(canonical, mapping.canonical, canonicalValue);
+      }
+    }
+    if (mapping.required && getNestedValue(canonical, mapping.canonical) === void 0) {
+      errors.push({
+        code: "MISSING_REQUIRED_FIELD",
+        path: `/${mapping.canonical.replaceAll(".", "/")}`,
+        message: `Required canonical field "${mapping.canonical}" missing (legacy: "${mapping.legacy}")`
+      });
+    }
+  }
+  for (const field of unmappedLegacyFields) {
+    errors.push({
+      code: "LOSSY_NORMALIZATION",
+      path: field,
+      message: `Legacy field "${field}" not mapped to canonical form \u2014 would be lost`
+    });
+  }
+  if (config.validate) {
+    const validationErrors = config.validate(canonical);
+    for (const error of validationErrors) {
+      errors.push({
+        code: "VALIDATION_FAILED",
+        path: "",
+        message: error
+      });
+    }
+  }
+  if (errors.length > 0) {
+    return { success: false, errors, warnings };
+  }
+  const schemaResult = validateContractAgainstSchema(canonical, contract);
+  if (!schemaResult.valid) {
+    return {
+      success: false,
+      errors: schemaResult.errors.map((e) => ({
+        code: "SCHEMA_VALIDATION_FAILED",
+        path: e.split(":")[0]?.trim() ?? "",
+        message: e
+      })),
+      warnings
+    };
+  }
+  if (Array.isArray(canonical.relations)) {
+    const relationResult = validateRelations(canonical.relations, contract);
+    if (!relationResult.valid) {
+      return {
+        success: false,
+        errors: relationResult.issues.map((i) => ({
+          code: i.code,
+          path: i.path,
+          message: i.message
+        })),
+        warnings
+      };
+    }
+  }
+  const sourceRevision = usedLegacyExpression ? "legacy" : "canonical";
+  return {
+    success: true,
+    ir: {
+      type: contract.identity.major.split(".")[1]?.split("@")[0] ?? "unknown",
+      id: String(canonical.metadata?.id ?? canonical["id"] ?? ""),
+      contractMajor: contract.identity.major,
+      contractDigest: contract.identity.revisionDigest,
+      canonical,
+      sourceRevision,
+      warnings
+    },
+    errors: [],
+    warnings
+  };
+}
+function resolvePropertyPath(schema, fieldPath) {
+  const parts = fieldPath.split(".");
+  let current = schema.properties;
+  for (const part of parts) {
+    if (!current || typeof current !== "object") return void 0;
+    const propDef = current[part];
+    if (!propDef) return void 0;
+    if (parts.indexOf(part) < parts.length - 1) {
+      current = propDef.properties;
+    } else {
+      return propDef;
+    }
+  }
+  return void 0;
+}
+function validatePolicyCompatibility(policy, baseContract) {
+  const errors = [];
+  const warnings = [];
+  if (policy.baseContractMajor !== baseContract.identity.major) {
+    errors.push(
+      `POLICY_INCOMPATIBLE: Policy references ${policy.baseContractMajor}, but base contract is ${baseContract.identity.major}`
+    );
+    return { compatible: false, errors, warnings };
+  }
+  const schema = baseContract.schema;
+  if (policy.additionalRequired) {
+    for (const field of policy.additionalRequired) {
+      const propDef = resolvePropertyPath(schema, field);
+      if (!propDef) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy requires field "${field}" which does not exist in base contract`);
+      }
+    }
+  }
+  if (policy.restrictedEnums) {
+    for (const [field, values] of Object.entries(policy.restrictedEnums)) {
+      const baseProperty = resolvePropertyPath(schema, field);
+      if (!baseProperty) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy restricts enum for field "${field}" which does not exist in base contract`);
+        continue;
+      }
+      if (!Array.isArray(baseProperty.enum)) {
+        errors.push(`POLICY_INCOMPATIBLE: Field "${field}" is not an enum in base contract \u2014 cannot restrict`);
+        continue;
+      }
+      for (const value of values) {
+        if (!baseProperty.enum.includes(value)) {
+          errors.push(`POLICY_INCOMPATIBLE: Policy enum value "${String(value)}" for field "${field}" not in base contract enum [${baseProperty.enum.join(", ")}]`);
+        }
+      }
+    }
+  }
+  if (policy.minCardinality) {
+    for (const [field, min] of Object.entries(policy.minCardinality)) {
+      if (!Number.isFinite(min) || min < 0 || !Number.isInteger(min)) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy min cardinality for "${field}" must be a non-negative integer, got ${min}`);
+        continue;
+      }
+      const baseProperty = resolvePropertyPath(schema, field);
+      if (!baseProperty) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy sets min cardinality for field "${field}" which does not exist in base contract`);
+        continue;
+      }
+      const baseMin = baseProperty.type === "array" ? baseProperty.minItems : baseProperty.minimum;
+      if (baseMin !== void 0 && min < baseMin) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy min cardinality ${min} for field "${field}" loosens base ${baseProperty.type === "array" ? "minItems" : "minimum"}=${baseMin}`);
+      }
+    }
+  }
+  if (policy.maxCardinality) {
+    for (const [field, max] of Object.entries(policy.maxCardinality)) {
+      if (!Number.isFinite(max) || max < 0 || !Number.isInteger(max)) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy max cardinality for "${field}" must be a non-negative integer, got ${max}`);
+        continue;
+      }
+      const baseProperty = resolvePropertyPath(schema, field);
+      if (!baseProperty) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy sets max cardinality for field "${field}" which does not exist in base contract`);
+        continue;
+      }
+      const baseMax = baseProperty.type === "array" ? baseProperty.maxItems : baseProperty.maximum;
+      if (baseMax !== void 0 && max > baseMax) {
+        errors.push(`POLICY_INCOMPATIBLE: Policy max cardinality ${max} for field "${field}" loosens base ${baseProperty.type === "array" ? "maxItems" : "maximum"}=${baseMax}`);
+      }
+    }
+  }
+  if (policy.constraints && Object.keys(policy.constraints).length > 0) {
+    for (const key of Object.keys(policy.constraints)) {
+      errors.push(`POLICY_INCOMPATIBLE: Constraint "${key}" is not implemented \u2014 rejected as unvalidated escape hatch`);
+    }
+  }
+  return {
+    compatible: errors.length === 0,
+    errors,
+    warnings
+  };
+}
+function applyProjectPolicy(policy, baseContract) {
+  const compatibility = validatePolicyCompatibility(policy, baseContract);
+  if (!compatibility.compatible) {
+    return {
+      success: false,
+      errors: compatibility.errors,
+      warnings: compatibility.warnings
+    };
+  }
+  const effectiveSchema = JSON.parse(JSON.stringify(baseContract.schema));
+  if (policy.additionalRequired) {
+    for (const fieldPath of policy.additionalRequired) {
+      const parts = fieldPath.split(".");
+      let parentSchema = effectiveSchema;
+      for (let i = 0; i < parts.length - 1; i++) {
+        parentSchema = parentSchema.properties?.[parts[i]];
+      }
+      const requiredField = parts[parts.length - 1];
+      if (!Array.isArray(parentSchema.required)) parentSchema.required = [];
+      if (!parentSchema.required.includes(requiredField)) {
+        parentSchema.required.push(requiredField);
+      }
+    }
+  }
+  if (policy.restrictedEnums) {
+    for (const [fieldPath, values] of Object.entries(policy.restrictedEnums)) {
+      const propDef = resolvePropertyPath(effectiveSchema, fieldPath);
+      if (propDef && Array.isArray(propDef.enum)) {
+        propDef.enum = propDef.enum.filter((v) => values.includes(v));
+      }
+    }
+  }
+  if (policy.minCardinality) {
+    for (const [fieldPath, min] of Object.entries(policy.minCardinality)) {
+      const propDef = resolvePropertyPath(effectiveSchema, fieldPath);
+      if (propDef) {
+        if (propDef.type === "array") {
+          propDef.minItems = min;
+        } else {
+          propDef.minimum = min;
+        }
+      }
+    }
+  }
+  if (policy.maxCardinality) {
+    for (const [fieldPath, max] of Object.entries(policy.maxCardinality)) {
+      const propDef = resolvePropertyPath(effectiveSchema, fieldPath);
+      if (propDef) {
+        if (propDef.type === "array") {
+          propDef.maxItems = max;
+        } else {
+          propDef.maximum = max;
+        }
+      }
+    }
+  }
+  effectiveSchema.contractIdentity = {
+    ...baseContract.identity,
+    revisionDigest: ""
+    // Placeholder — will be computed below
+  };
+  const effectiveDigest = computeRevisionDigest(JSON.stringify(effectiveSchema));
+  effectiveSchema.contractIdentity.revisionDigest = effectiveDigest;
+  const effectiveIdentity = {
+    ...baseContract.identity,
+    revisionDigest: effectiveDigest
+  };
+  effectiveSchema.contractIdentity = effectiveIdentity;
+  const effectiveRawContent = JSON.stringify(effectiveSchema);
+  const effectiveContract = {
+    identity: effectiveIdentity,
+    schema: effectiveSchema,
+    rawContent: effectiveRawContent
+  };
+  return {
+    success: true,
+    effectiveContract,
+    errors: [],
+    warnings: compatibility.warnings
+  };
+}
+async function loadContract(contractPath, options) {
+  const rawContent = await readFile2(contractPath, "utf-8");
+  let schema;
+  try {
+    schema = JSON.parse(rawContent);
+  } catch (error) {
+    throw new ContractError(
+      CONTRACT_ERROR_CODES.INVALID_IDENTITY,
+      `Failed to parse contract JSON: ${error.message}`,
+      { path: contractPath }
+    );
+  }
+  if (!schema.contractIdentity) {
+    throw new ContractError(
+      CONTRACT_ERROR_CODES.INVALID_IDENTITY,
+      "Contract missing contractIdentity",
+      { path: contractPath }
+    );
+  }
+  const identity = schema.contractIdentity;
+  if (!identity.major || !identity.authority || !identity.namespace) {
+    throw new ContractError(
+      CONTRACT_ERROR_CODES.INVALID_IDENTITY,
+      "Contract identity missing required fields (major, authority, namespace)",
+      { identity }
+    );
+  }
+  if (options?.expectedAuthority) {
+    validateNamespaceAuthority(identity, options.expectedAuthority);
+  } else {
+    validateNamespaceAuthority(identity);
+  }
+  const computedDigest = computeRevisionDigest(rawContent);
+  if (identity.revisionDigest && identity.revisionDigest !== computedDigest) {
+    throw new ContractError(
+      CONTRACT_ERROR_CODES.DIGEST_MISMATCH,
+      `Contract digest mismatch: declared ${identity.revisionDigest}, computed ${computedDigest}`,
+      { identity, computedDigest }
+    );
+  }
+  identity.revisionDigest = computedDigest;
+  return {
+    identity,
+    schema,
+    rawContent
+  };
+}
+async function loadContractsFromDirectory(contractsDir, options) {
+  const contracts = [];
+  const entries = await readdir(contractsDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const schemaPath = join5(contractsDir, entry.name, "schema.json");
+      const contract = await loadContract(schemaPath, options);
+      contracts.push(contract);
+    }
+  }
+  return contracts;
+}
+function getValidator(schema) {
+  const key = `${schema.$id || "default"}#${computeRevisionDigest(JSON.stringify(schema))}`;
+  if (!_validatorCache.has(key)) {
+    const AjvCtor = _AjvModule;
+    const ajv = new AjvCtor({ allErrors: true, strict: false });
+    _validatorCache.set(key, ajv.compile(schema));
+  }
+  return _validatorCache.get(key);
+}
+function validateContractAgainstSchema(data, contract) {
+  const validate = getValidator(contract.schema);
+  const valid = validate(data);
+  if (valid) {
+    return { valid: true, errors: [] };
+  }
+  const errors = (validate.errors ?? []).map(
+    (err) => `${err.instancePath || "/"}: ${err.message ?? "validation error"}`
+  );
+  return { valid: false, errors };
+}
+function validateRelations(relations, contract) {
+  const issues = [];
+  const relationRules = contract.identity.relationRules;
+  if (!relationRules) {
+    issues.push({
+      code: "RELATION_RULES_MISSING",
+      path: "/contractIdentity/relationRules",
+      message: "Contract does not define relation rules \u2014 cannot validate relations"
+    });
+    return { valid: false, issues };
+  }
+  const relationsByKind = /* @__PURE__ */ new Map();
+  for (const relation of relations) {
+    const kind = relation.kind;
+    if (!relationsByKind.has(kind)) {
+      relationsByKind.set(kind, []);
+    }
+    relationsByKind.get(kind).push(relation);
+  }
+  for (let i = 0; i < relations.length; i++) {
+    const relation = relations[i];
+    const kind = relation.kind;
+    const targetType = relation.target_type;
+    const path = `/relations/${i}`;
+    if (!relationRules[kind]) {
+      issues.push({
+        code: "RELATION_INVALID_KIND",
+        path: `${path}/kind`,
+        message: `Relation kind "${kind}" is not allowed by contract rules`
+      });
+      continue;
+    }
+    const rule = relationRules[kind];
+    if (!rule.allowedTargetTypes.includes(targetType)) {
+      issues.push({
+        code: "RELATION_INVALID_TARGET_TYPE",
+        path: `${path}/target_type`,
+        message: `Target type "${targetType}" is not allowed for relation kind "${kind}". Allowed: ${rule.allowedTargetTypes.join(", ")}`
+      });
+    }
+    const hasAnchor = relation.anchor !== void 0 && relation.anchor !== "";
+    if (rule.anchorPolicy === "required" && !hasAnchor) {
+      issues.push({
+        code: "RELATION_MISSING_ANCHOR",
+        path: `${path}/anchor`,
+        message: `Relation kind "${kind}" requires an anchor`
+      });
+    } else if (rule.anchorPolicy === "forbidden" && hasAnchor) {
+      issues.push({
+        code: "RELATION_FORBIDDEN_ANCHOR",
+        path: `${path}/anchor`,
+        message: `Relation kind "${kind}" forbids anchors`
+      });
+    }
+  }
+  for (const [kind, rule] of Object.entries(relationRules)) {
+    const count = relationsByKind.get(kind)?.length ?? 0;
+    if (count < rule.min) {
+      issues.push({
+        code: "RELATION_BELOW_MIN",
+        path: "/relations",
+        message: `Relation kind "${kind}" has ${count} instances, minimum is ${rule.min}`
+      });
+    }
+    if (count > rule.max) {
+      issues.push({
+        code: "RELATION_ABOVE_MAX",
+        path: "/relations",
+        message: `Relation kind "${kind}" has ${count} instances, maximum is ${rule.max}`
+      });
+    }
+  }
+  return {
+    valid: issues.length === 0,
+    issues
+  };
+}
+function validateSemanticMarkers(markdownContent, contract) {
+  const errors = [];
+  const semanticMarkers = contract.identity.semanticMarkers;
+  if (!semanticMarkers) {
+    return { valid: true, errors: [] };
+  }
+  const markerRegex = /<!--\s*marker:\s*([a-zA-Z0-9_-]+)\s*-->/g;
+  const foundMarkers = /* @__PURE__ */ new Map();
+  let match;
+  while ((match = markerRegex.exec(markdownContent)) !== null) {
+    const markerName = match[1];
+    foundMarkers.set(markerName, (foundMarkers.get(markerName) ?? 0) + 1);
+  }
+  for (const [markerName, markerDef] of Object.entries(semanticMarkers)) {
+    if (markerDef.required && !foundMarkers.has(markerDef.markdownMarker)) {
+      errors.push(`MARKER_MISSING: Required semantic marker "${markerDef.markdownMarker}" not found in Markdown content`);
+    }
+  }
+  for (const [markerName, count] of foundMarkers.entries()) {
+    if (count > 1) {
+      errors.push(`MARKER_DUPLICATE: Semantic marker "${markerName}" appears ${count} times, must be unique`);
+    }
+  }
+  const knownMarkers = new Set(Object.values(semanticMarkers).map((m) => m.markdownMarker));
+  for (const markerName of foundMarkers.keys()) {
+    if (!knownMarkers.has(markerName)) {
+      errors.push(`MARKER_UNKNOWN: Unknown semantic marker "${markerName}" not defined in contract`);
+    }
+  }
+  return {
+    valid: errors.length === 0,
+    errors
+  };
+}
+function failClosedValidation() {
+  return {
+    valid: false,
+    errors: ["/: Schema validator unavailable \u2014 fail-closed rejection"]
+  };
+}
+function setAjvConstructor(_ctor) {
+}
+function normalizeE2eLegacyArtifact(legacyData, contract) {
+  return normalizeToCanonical(legacyData, E2E_NORMALIZER_CONFIG, contract);
+}
+async function loadContractCatalog(contractsDir, options) {
+  const catalog = new ContractCatalog();
+  const contracts = await loadContractsFromDirectory(contractsDir, options);
+  for (const contract of contracts) {
+    catalog.add(contract);
+  }
+  return catalog;
+}
+async function runContractCli(args, io) {
+  const { runCli: runCli2 } = await Promise.resolve().then(() => (init_cli(), cli_exports));
+  return runCli2(args, io);
+}
+var CONTRACT_ERROR_CODES, ContractError, OFFICIAL_AUTHORITY, OFFICIAL_NAMESPACE_PATTERN, ContractRegistry, _validatorCache, __AjvCtor, E2E_NORMALIZER_CONFIG, ContractCatalog;
+var init_contract_kernel = __esm({
+  "src/contract-kernel.ts"() {
+    "use strict";
+    CONTRACT_ERROR_CODES = {
+      /** Contract identity not found */
+      CONTRACT_NOT_FOUND: "CONTRACT_NOT_FOUND",
+      /** Invalid contract identity format */
+      INVALID_IDENTITY: "INVALID_IDENTITY",
+      /** Revision digest mismatch */
+      DIGEST_MISMATCH: "DIGEST_MISMATCH",
+      /** Duplicate contract identity */
+      DUPLICATE_IDENTITY: "DUPLICATE_IDENTITY",
+      /** Multiple active write contracts for same type */
+      MULTIPLE_ACTIVE_WRITE: "MULTIPLE_ACTIVE_WRITE",
+      /** Unknown authority namespace */
+      UNKNOWN_AUTHORITY: "UNKNOWN_AUTHORITY",
+      /** Namespace authority violation */
+      AUTHORITY_VIOLATION: "AUTHORITY_VIOLATION",
+      /** Schema validation failed */
+      SCHEMA_VALIDATION_FAILED: "SCHEMA_VALIDATION_FAILED",
+      /** Canonical IR normalization failed */
+      NORMALIZATION_FAILED: "NORMALIZATION_FAILED",
+      /** Policy compatibility check failed */
+      POLICY_INCOMPATIBLE: "POLICY_INCOMPATIBLE",
+      /** Legacy revision cannot be normalized */
+      LEGACY_NORMALIZATION_FAILED: "LEGACY_NORMALIZATION_FAILED",
+      /** Canonical and legacy conflict */
+      CANONICAL_LEGACY_CONFLICT: "CANONICAL_LEGACY_CONFLICT",
+      /** Relation rule violation */
+      RELATION_RULE_VIOLATION: "RELATION_RULE_VIOLATION",
+      /** Relation rules missing in contract (fail closed) */
+      RELATION_RULES_MISSING: "RELATION_RULES_MISSING",
+      /** Ambiguous revision — multiple revisions found, no unique active write */
+      AMBIGUOUS_REVISION: "AMBIGUOUS_REVISION",
+      /** Invalid relation kind */
+      RELATION_INVALID_KIND: "RELATION_INVALID_KIND",
+      /** Invalid relation target type */
+      RELATION_INVALID_TARGET_TYPE: "RELATION_INVALID_TARGET_TYPE",
+      /** Relation below minimum cardinality */
+      RELATION_BELOW_MIN: "RELATION_BELOW_MIN",
+      /** Relation above maximum cardinality */
+      RELATION_ABOVE_MAX: "RELATION_ABOVE_MAX",
+      /** Missing required anchor */
+      RELATION_MISSING_ANCHOR: "RELATION_MISSING_ANCHOR",
+      /** Forbidden anchor present */
+      RELATION_FORBIDDEN_ANCHOR: "RELATION_FORBIDDEN_ANCHOR",
+      /** Missing required semantic marker */
+      MARKER_MISSING: "MARKER_MISSING",
+      /** Duplicate semantic marker */
+      MARKER_DUPLICATE: "MARKER_DUPLICATE",
+      /** Unknown semantic marker */
+      MARKER_UNKNOWN: "MARKER_UNKNOWN"
+    };
+    ContractError = class extends Error {
+      constructor(code, message, details) {
+        super(message);
+        this.code = code;
+        this.details = details;
+        this.name = "ContractError";
+      }
+      code;
+      details;
+    };
+    OFFICIAL_AUTHORITY = "artifact";
+    OFFICIAL_NAMESPACE_PATTERN = /^artifact(?:\.|$)/;
+    ContractRegistry = class {
+      contracts = /* @__PURE__ */ new Map();
+      typeToActiveWrite = /* @__PURE__ */ new Map();
+      majorToContracts = /* @__PURE__ */ new Map();
+      /**
+       * Register a contract
+       * @throws ContractError if duplicate identity or multiple active write contracts
+       */
+      register(contract, options) {
+        const major = contract.identity.major;
+        const digest = contract.identity.revisionDigest;
+        const key = `${major}@${digest}`;
+        const isActive = options?.isActive ?? true;
+        const isWriteTarget = options?.isWriteTarget ?? true;
+        if (this.contracts.has(key)) {
+          throw new ContractError(
+            CONTRACT_ERROR_CODES.DUPLICATE_IDENTITY,
+            `Contract ${key} already registered`,
+            { identity: contract.identity }
+          );
+        }
+        if (isActive && isWriteTarget) {
+          const type = major.split("@")[0];
+          if (this.typeToActiveWrite.has(type)) {
+            throw new ContractError(
+              CONTRACT_ERROR_CODES.MULTIPLE_ACTIVE_WRITE,
+              `Type ${type} already has active write contract: ${this.typeToActiveWrite.get(type)}`,
+              { identity: contract.identity, existing: this.typeToActiveWrite.get(type) }
+            );
+          }
+          this.typeToActiveWrite.set(type, key);
+        }
+        this.contracts.set(key, {
+          contract,
+          isActive,
+          isWriteTarget,
+          loadedAt: (/* @__PURE__ */ new Date()).toISOString()
+        });
+        if (!this.majorToContracts.has(major)) {
+          this.majorToContracts.set(major, /* @__PURE__ */ new Set());
+        }
+        this.majorToContracts.get(major).add(key);
+      }
+      /**
+       * Resolve by major identity. Multiple revisions require a unique active write
+       * revision; insertion order is never a resolution policy.
+       */
+      get(major) {
+        const keys = this.majorToContracts.get(major);
+        if (!keys || keys.size === 0) return void 0;
+        if (keys.size === 1) {
+          const onlyKey = keys.values().next().value;
+          return onlyKey ? this.contracts.get(onlyKey)?.contract : void 0;
+        }
+        const type = major.split("@")[0];
+        const activeWriteKey = this.typeToActiveWrite.get(type);
+        if (activeWriteKey && keys.has(activeWriteKey)) {
+          return this.contracts.get(activeWriteKey)?.contract;
+        }
+        throw new ContractError(
+          CONTRACT_ERROR_CODES.AMBIGUOUS_REVISION,
+          `Multiple revisions found for ${major} with no unique active write \u2014 specify digest`,
+          {
+            major,
+            availableDigests: Array.from(keys).map((key) => this.contracts.get(key)?.contract.identity.revisionDigest).filter((digest) => Boolean(digest))
+          }
+        );
+      }
+      /**
+       * Get contract by major identity and digest
+       */
+      getByMajorAndDigest(major, digest) {
+        const key = `${major}@${digest}`;
+        return this.contracts.get(key)?.contract;
+      }
+      /**
+       * Get all contracts for a major identity
+       */
+      getByMajor(major) {
+        const keys = this.majorToContracts.get(major);
+        if (!keys) return [];
+        return Array.from(keys).map((key) => this.contracts.get(key)?.contract).filter((c) => c !== void 0);
+      }
+      /**
+       * Get active write contract for a type
+       */
+      getActiveWriteContract(typePrefix) {
+        const key = this.typeToActiveWrite.get(typePrefix);
+        return key ? this.contracts.get(key)?.contract : void 0;
+      }
+      /**
+       * List all registered contracts
+       */
+      list() {
+        return Array.from(this.contracts.values());
+      }
+      /**
+       * Check if a contract is registered by major identity
+       */
+      has(major) {
+        const keys = this.majorToContracts.get(major);
+        return keys !== void 0 && keys.size > 0;
+      }
+      /**
+       * Check if a contract is registered by major identity and digest
+       */
+      hasByMajorAndDigest(major, digest) {
+        const key = `${major}@${digest}`;
+        return this.contracts.has(key);
+      }
+    };
+    _validatorCache = /* @__PURE__ */ new Map();
+    __AjvCtor = null;
+    E2E_NORMALIZER_CONFIG = {
+      contractMajor: "artifact.e2e-test@1",
+      fieldMappings: [
+        { legacy: "id", canonical: "metadata.id", required: true },
+        { legacy: "title", canonical: "metadata.title", required: true },
+        { legacy: "status", canonical: "metadata.status", required: true },
+        { legacy: "test_batch", canonical: "metadata.test_batch" },
+        { legacy: "scope", canonical: "scope.business_goal", transform: (v) => String(v) },
+        { legacy: "actors", canonical: "scope.actors", transform: (v) => Array.isArray(v) ? v : [v] },
+        { legacy: "system_boundaries", canonical: "system_boundary.components", transform: (v) => Array.isArray(v) ? v : [v] },
+        { legacy: "test_cases", canonical: "test_cases", required: true },
+        { legacy: "relations", canonical: "relations" },
+        // Map legacy coverage fields if present
+        { legacy: "ac_coverage", canonical: "coverage.ac_coverage" },
+        { legacy: "related_scenarios", canonical: "coverage.related_scenarios" },
+        // Map legacy environment fields if present
+        { legacy: "topology", canonical: "environment_data.topology" },
+        { legacy: "fixtures", canonical: "environment_data.fixtures" },
+        { legacy: "isolation_strategy", canonical: "environment_data.isolation_strategy" },
+        // Map legacy evidence fields if present
+        { legacy: "required_artifacts", canonical: "evidence_contract.required_artifacts" },
+        { legacy: "runner_binding", canonical: "evidence_contract.runner_binding" }
+      ],
+      validate: (canonical) => {
+        const errors = [];
+        if (!canonical.metadata || typeof canonical.metadata !== "object") {
+          errors.push("metadata must be an object");
+        }
+        if (!canonical.scope || typeof canonical.scope !== "object") {
+          errors.push("scope must be an object");
+        }
+        if (!canonical.system_boundary || typeof canonical.system_boundary !== "object") {
+          errors.push("system_boundary must be an object");
+        }
+        if (!Array.isArray(canonical.test_cases) || canonical.test_cases.length === 0) {
+          errors.push("test_cases must be a non-empty array");
+        }
+        if (Array.isArray(canonical.test_cases)) {
+          for (let i = 0; i < canonical.test_cases.length; i++) {
+            const tc = canonical.test_cases[i];
+            if (!Array.isArray(tc.trace_targets) || tc.trace_targets.length === 0) {
+              errors.push(`test_cases[${i}].trace_targets must be a non-empty array`);
+            }
+          }
+        }
+        return errors;
+      }
+    };
+    ContractCatalog = class {
+      contracts = /* @__PURE__ */ new Map();
+      majorToContracts = /* @__PURE__ */ new Map();
+      majorToActiveWrite = /* @__PURE__ */ new Map();
+      /**
+       * Add a contract to the catalog
+       * @throws ContractError if duplicate identity
+       */
+      add(contract, options) {
+        const major = contract.identity.major;
+        const digest = contract.identity.revisionDigest;
+        const key = `${major}@${digest}`;
+        const isActive = options?.isActive ?? true;
+        const isWriteTarget = options?.isWriteTarget ?? true;
+        if (this.contracts.has(key)) {
+          throw new ContractError(
+            CONTRACT_ERROR_CODES.DUPLICATE_IDENTITY,
+            `Contract ${key} already in catalog`,
+            { identity: contract.identity }
+          );
+        }
+        this.contracts.set(key, contract);
+        if (!this.majorToContracts.has(major)) {
+          this.majorToContracts.set(major, /* @__PURE__ */ new Set());
+        }
+        this.majorToContracts.get(major).add(key);
+        if (isActive && isWriteTarget) {
+          const existingActive = this.majorToActiveWrite.get(major);
+          if (existingActive && existingActive !== key) {
+            this.contracts.delete(key);
+            this.majorToContracts.get(major)?.delete(key);
+            throw new ContractError(
+              CONTRACT_ERROR_CODES.MULTIPLE_ACTIVE_WRITE,
+              `Major ${major} already has active write revision`,
+              { major, existing: existingActive, attempted: key }
+            );
+          }
+          this.majorToActiveWrite.set(major, key);
+        }
+      }
+      /**
+       * Resolve a contract by major identity.
+       * - 0 entries: returns undefined
+       * - 1 entry: returns it
+       * - multiple: if there's a unique active write, returns it; otherwise throws AMBIGUOUS_REVISION
+       */
+      resolve(major) {
+        const keys = this.majorToContracts.get(major);
+        if (!keys || keys.size === 0) return void 0;
+        if (keys.size === 1) {
+          const firstKey = keys.values().next().value;
+          return firstKey ? this.contracts.get(firstKey) : void 0;
+        }
+        const activeWriteKey = this.majorToActiveWrite.get(major);
+        if (activeWriteKey) {
+          return this.contracts.get(activeWriteKey);
+        }
+        throw new ContractError(
+          CONTRACT_ERROR_CODES.AMBIGUOUS_REVISION,
+          `Multiple revisions found for ${major} with no unique active write \u2014 specify digest`,
+          {
+            major,
+            availableDigests: Array.from(keys).map((key) => this.contracts.get(key)?.identity.revisionDigest).filter((digest) => Boolean(digest))
+          }
+        );
+      }
+      /**
+       * Resolve a contract by major identity and exact digest
+       */
+      resolveByDigest(major, digest) {
+        const key = `${major}@${digest}`;
+        return this.contracts.get(key);
+      }
+      /**
+       * List all catalog entries (all revisions)
+       */
+      list() {
+        return Array.from(this.contracts.values()).map((contract) => ({
+          identity: contract.identity,
+          contract
+        }));
+      }
+      /**
+       * Get catalog as JSON-serializable object (all revisions)
+       */
+      toJSON() {
+        return {
+          contracts: this.list().map((entry) => ({
+            major: entry.identity.major,
+            authority: entry.identity.authority,
+            namespace: entry.identity.namespace,
+            revisionDigest: entry.identity.revisionDigest
+          }))
+        };
+      }
+    };
+  }
+});
 
 // src/index.ts
-var TARGET_ARTIFACT_TYPES = VALID_PACKET_TARGET_TYPES;
-var NON_TARGET_ROLES = ["context", "candidate", "not-recommended"];
+import Database from "better-sqlite3";
+import matter from "gray-matter";
+import yaml from "js-yaml";
+import { accessSync, constants as fsConstants, existsSync as existsSync2, statSync } from "fs";
+import { mkdir as mkdir4, readFile as readFile3, readdir as readdir2, writeFile as writeFile3 } from "fs/promises";
+import { basename as basename3, dirname as dirname3, extname, isAbsolute as isAbsolute3, join as join6, relative as relative2, resolve as resolve3 } from "path";
 function isTargetArtifactType(type) {
   return isPacketTargetType(type);
 }
@@ -3122,56 +4152,11 @@ function resolveArtifactTypeName(schema, token) {
   }
   return void 0;
 }
-var DEFAULT_SCHEMA = {
-  types: {
-    decision: { paths: ["artifacts/decisions/**/*.md"], displayName: "\u51B3\u7B56\u6587\u6863", role: "decision", layer: "decision", aliases: ["decisions", "adr"] },
-    entity: { paths: ["artifacts/entities/entity-registry.md"], displayName: "\u5B9E\u4F53\u6CE8\u518C\u8868", role: "context", layer: "domain", aliases: ["entity-registry"] },
-    feature: { paths: ["artifacts/prd/features/**/*.md"], displayName: "\u529F\u80FD\u7279\u6027", role: "feature", layer: "prd", aliases: ["prd-feature", "prd_features"] },
-    scenario: { paths: ["artifacts/scenarios/**/*.md"], displayName: "\u573A\u666F\u5267\u672C", role: "scenario", layer: "scenario", aliases: ["scenarios", "scenario-script"] },
-    design: { paths: ["artifacts/design/**/*.md"], displayName: "\u8BBE\u8BA1\u89C4\u683C", role: "design", layer: "design", aliases: ["design-spec", "design_docs"] },
-    test: { paths: ["heimdall/packages/**/*.test.ts"], displayName: "\u4EE3\u7801\u6CE8\u91CA\u8FFD\u6EAF", role: "context", layer: "implementation", aliases: ["code-test", "code-trace", "unit-test"] },
-    e2e_test: { paths: ["artifacts/tests/e2e/*.md"], displayName: "E2E \u6D4B\u8BD5\u89C4\u683C", role: "e2e_test", layer: "verification", aliases: ["e2e-test", "e2e_tests", "tc"] },
-    e2e_registry: { paths: ["artifacts/tests/e2e/e2e-test-registry.json"], displayName: "E2E \u6D4B\u8BD5\u6CE8\u518C\u8868", role: "context", layer: "verification", aliases: ["e2e-registry"] },
-    "rule-golden-cases": { paths: ["artifacts/tests/rule-golden-cases.md"], displayName: "\u89C4\u5219\u9EC4\u91D1\u6D4B\u8BD5\u7528\u4F8B", role: "context", layer: "verification", aliases: ["rule_golden_cases"] },
-    "test-strategy": { paths: ["artifacts/design/test-strategy.md"], displayName: "\u6D4B\u8BD5\u7B56\u7565", role: "context", layer: "verification", aliases: ["test_strategy"] },
-    "traceability-matrix-v2": { paths: ["artifacts/traceability-matrix-v2.md"], displayName: "\u8FFD\u6EAF\u77E9\u9635 v2", role: "context", layer: "traceability", aliases: ["traceability_matrix_v2"] }
-  },
-  idPatterns: {
-    decision: "^D-[A-Z]+-\\d+$",
-    entity: "^E-\\d{3,}$",
-    feature: "^[A-Z]{1,4}\\d+$",
-    scenario: "^S-\\d+[a-z]?$",
-    design: "^[A-Za-z0-9._-]+$",
-    test: "^.+\\.test\\.ts$",
-    e2e_test: "^.+:(TC-\\d+[a-z]?|FILE)$",
-    e2e_registry: "^e2e-test-registry$",
-    "rule-golden-cases": "^[A-Z]+-\\d{3}:(pass|fail|edge)$",
-    "test-strategy": "^(unit|integration|e2e|desktop_chain|rule|contract)$",
-    "traceability-matrix-v2": "^.+$"
-  },
-  relationFields: {
-    feature: ["scenarios", "decisions", "depends_on", "design_docs"],
-    scenario: ["\u5173\u8054\u529F\u80FD", "\u5173\u8054\u51B3\u7B56"],
-    design: ["related_features", "related_scenarios"],
-    test: ["@scenario", "@feature", "@entity", "@decision"],
-    e2e_test: ["test_batch", "scope", "ac_coverage", "related_scenarios", "related_decisions", "related_entities", "\u8986\u76D6\u573A\u666F", "\u8986\u76D6\u529F\u80FD"],
-    e2e_registry: ["batches"]
-  },
-  allowedEdges: [],
-  forbiddenEdges: [{ from: "scenario", to: "entity", kind: "references" }],
-  statuses: ["planned", "active", "done", "deprecated"],
-  idRanges: {},
-  e2e: {
-    report_uncovered_scenarios: true,
-    report_uncovered_features: true,
-    runners: []
-  }
-};
 async function loadConfig(root) {
-  const configPath = join5(root, "artifact-graph.config.yaml");
+  const configPath = join6(root, "artifact-graph.config.yaml");
   let parsed = {};
   try {
-    const raw = await readFile2(configPath, "utf-8");
+    const raw = await readFile3(configPath, "utf-8");
     parsed = yaml.load(raw) ?? {};
   } catch (error) {
     if (error.code !== "ENOENT") {
@@ -3345,7 +4330,7 @@ async function scanArtifacts(root, schema) {
         continue;
       }
       scannedFiles.set(file, type);
-      const raw = await readFile2(join5(root, file), "utf-8");
+      const raw = await readFile3(join6(root, file), "utf-8");
       const parsed = parseFile(type, file, raw, config);
       nodes.push(...parsed.nodes);
       edges.push(...parsed.edges);
@@ -3657,7 +4642,7 @@ async function validateScenarioPrdLinkIndex(root, graph) {
   const indexPath = "artifacts/prd/feature-index.md";
   let raw = "";
   try {
-    raw = await readFile2(join5(root, indexPath), "utf-8");
+    raw = await readFile3(join6(root, indexPath), "utf-8");
   } catch (error) {
     if (error.code === "ENOENT") {
       return [];
@@ -3847,11 +4832,11 @@ function nextId(graph, schema, type, rangeName) {
   throw new Error(`ID range ${type}.${rangeName} is exhausted`);
 }
 async function writeGraphCache(root, graph) {
-  const cacheDir = join5(root, ".artifact-graph");
+  const cacheDir = join6(root, ".artifact-graph");
   await mkdir4(cacheDir, { recursive: true });
-  await writeFile3(join5(cacheDir, "index.json"), `${JSON.stringify(graph, null, 2)}
+  await writeFile3(join6(cacheDir, "index.json"), `${JSON.stringify(graph, null, 2)}
 `);
-  const db = new Database(join5(cacheDir, "graph.sqlite"));
+  const db = new Database(join6(cacheDir, "graph.sqlite"));
   try {
     db.exec(`
       DROP TABLE IF EXISTS nodes;
@@ -4189,7 +5174,7 @@ function parseDecisions(path, raw) {
 }
 function isTestFile(filePath) {
   const normalized = filePath.replace(/\\/g, "/");
-  const name = basename2(normalized);
+  const name = basename3(normalized);
   if (/\.(test|spec)\.[^.]+$/.test(name)) return true;
   if (/(^|\/)(tests|test|__tests__)\//.test(normalized)) return true;
   if (/\w+Tests?\.java$/.test(name)) return true;
@@ -4480,7 +5465,7 @@ function parseE2eTest(path, raw) {
   });
   const nodes = [];
   const edges = [];
-  const batch = String(data.test_batch ?? basename2(path, extname(path))).trim();
+  const batch = String(data.test_batch ?? basename3(path, extname(path))).trim();
   const frontmatterScenarios = toArray(data.related_scenarios).map((value) => String(value).trim()).filter(Boolean);
   const scopeFeatures = extractCodes(String(data.scope ?? ""), "feature");
   const frontmatterFeatures = [.../* @__PURE__ */ new Set([...Object.keys(asRecord(data.ac_coverage)), ...scopeFeatures])];
@@ -4553,7 +5538,7 @@ function parseE2eRegistry(path, raw) {
     data = { parseError: error.message };
   }
   return {
-    nodes: [{ type: "e2e_registry", code: basename2(path, extname(path)), title: "E2E Test Registry", path, line: 1, attrs: data }],
+    nodes: [{ type: "e2e_registry", code: basename3(path, extname(path)), title: "E2E Test Registry", path, line: 1, attrs: data }],
     edges: []
   };
 }
@@ -5534,10 +6519,10 @@ function validateE2eRegistry(graph) {
 async function validateExecutableTraceability(root, config) {
   const issues = [];
   const schema = config ?? await loadConfig(root);
-  const e2eDir = join5(root, "artifacts", "tests", "e2e");
+  const e2eDir = join6(root, "artifacts", "tests", "e2e");
   let e2eFiles;
   try {
-    e2eFiles = (await readdir(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join5(e2eDir, name));
+    e2eFiles = (await readdir2(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join6(e2eDir, name));
   } catch {
     return [];
   }
@@ -5546,11 +6531,11 @@ async function validateExecutableTraceability(root, config) {
   const tcKeyToFields = /* @__PURE__ */ new Map();
   const mdBatches = /* @__PURE__ */ new Set();
   for (const filePath of e2eFiles) {
-    const raw = await readFile2(filePath, "utf-8");
+    const raw = await readFile3(filePath, "utf-8");
     const relPath = relative2(root, filePath).split("\\").join("/");
     const parsed = matter(raw);
     const data = parsed.data;
-    const batch = String(data.test_batch ?? basename2(filePath, extname(filePath))).trim();
+    const batch = String(data.test_batch ?? basename3(filePath, extname(filePath))).trim();
     const lines = raw.split(/\r?\n/);
     const tcStarts = [];
     lines.forEach((line, index) => {
@@ -5595,10 +6580,10 @@ async function validateExecutableTraceability(root, config) {
   const tcAnnotationRegex = /\/\/!?\s*@(?:e2e_test|tc)\s+(\S+?)\s+\[(\w+)\]/;
   const tcAnnotationNoLevelRegex = /\/\/!?\s*@(?:e2e_test|tc)\s+(\S+)/;
   for (const specFile of specFiles) {
-    const fullSpecPath = join5(root, specFile);
+    const fullSpecPath = join6(root, specFile);
     let content;
     try {
-      content = await readFile2(fullSpecPath, "utf-8");
+      content = await readFile3(fullSpecPath, "utf-8");
     } catch {
       continue;
     }
@@ -5675,7 +6660,7 @@ async function validateExecutableTraceability(root, config) {
       if (entry.testId) {
         let content;
         try {
-          content = await readFile2(join5(root, normalizedRefFile), "utf-8");
+          content = await readFile3(join6(root, normalizedRefFile), "utf-8");
         } catch {
           continue;
         }
@@ -5852,16 +6837,16 @@ async function computeE2eCoverageStats(graph, root, thresholds = {}) {
   let withExecutableRef = 0;
   const statusBreakdown = {};
   const chainTypeBreakdown = {};
-  const e2eDir = join5(root, "artifacts", "tests", "e2e");
+  const e2eDir = join6(root, "artifacts", "tests", "e2e");
   const tcFieldsMap = /* @__PURE__ */ new Map();
   let e2eFiles;
   try {
-    e2eFiles = (await readdir(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join5(e2eDir, name));
+    e2eFiles = (await readdir2(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).map((name) => join6(e2eDir, name));
   } catch {
     e2eFiles = [];
   }
   for (const filePath of e2eFiles) {
-    const raw = await readFile2(filePath, "utf-8");
+    const raw = await readFile3(filePath, "utf-8");
     const lines = raw.split(/\r?\n/);
     const tcStarts = [];
     lines.forEach((line, index) => {
@@ -5871,7 +6856,7 @@ async function computeE2eCoverageStats(graph, root, thresholds = {}) {
       }
     });
     const parsed = matter(raw);
-    const batch = String(parsed.data.test_batch ?? basename2(filePath, extname(filePath))).trim();
+    const batch = String(parsed.data.test_batch ?? basename3(filePath, extname(filePath))).trim();
     for (let i = 0; i < tcStarts.length; i++) {
       const start = tcStarts[i];
       const end = tcStarts[i + 1]?.index ?? lines.length;
@@ -5934,7 +6919,7 @@ async function computeE2eCoverageStats(graph, root, thresholds = {}) {
     let hasActiveE2eRef = false;
     for (const entry of parseExecutableRefLines(execRef)) {
       const normalized = resolveExecutableRefFile(entry.file, allProjectFiles);
-      if (!normalized || !existsSync2(join5(root, normalized))) continue;
+      if (!normalized || !existsSync2(join6(root, normalized))) continue;
       const accepting = await getAcceptingRunners(root, normalized, runners);
       if (accepting.some((runner) => runner.kind === "e2e")) {
         hasActiveE2eRef = true;
@@ -5993,7 +6978,7 @@ async function computeE2eCoverageStats(graph, root, thresholds = {}) {
   const acCoverageRateByFeature = {};
   const featureAcMap = /* @__PURE__ */ new Map();
   for (const node of featureNodes) {
-    const acs = parseAcceptanceCriteria(await readFile2(join5(root, node.path), "utf-8"));
+    const acs = parseAcceptanceCriteria(await readFile3(join6(root, node.path), "utf-8"));
     featureAcMap.set(node.code, new Set(acs));
   }
   const coveredAcByFeature = /* @__PURE__ */ new Map();
@@ -6035,10 +7020,10 @@ async function computeE2eCoverageStats(graph, root, thresholds = {}) {
   };
 }
 async function generateE2eRegistry(root, opts) {
-  const e2eDir = join5(root, "artifacts", "tests", "e2e");
+  const e2eDir = join6(root, "artifacts", "tests", "e2e");
   let files;
   try {
-    files = (await readdir(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).sort();
+    files = (await readdir2(e2eDir)).filter((name) => /^test-.*\.md$/.test(name)).sort();
   } catch {
     return {
       registry_version: "1.0",
@@ -6051,11 +7036,11 @@ async function generateE2eRegistry(root, opts) {
   const batches = [];
   let totalTestCases = 0;
   for (const file of files) {
-    const filePath = join5(e2eDir, file);
-    const raw = await readFile2(filePath, "utf-8");
+    const filePath = join6(e2eDir, file);
+    const raw = await readFile3(filePath, "utf-8");
     const parsed = matter(raw);
     const data = parsed.data;
-    const batch = String(data.test_batch ?? basename2(file, extname(file))).trim();
+    const batch = String(data.test_batch ?? basename3(file, extname(file))).trim();
     const relPath = `artifacts/tests/e2e/${file}`;
     const scope = String(data.scope ?? "").trim();
     const acCoverage = normalizeAcCoverageForRegistry(data.ac_coverage);
@@ -6144,20 +7129,6 @@ function parseExecutableRefLines(ref) {
   }
   return results;
 }
-var VALID_TC_STATUSES = /* @__PURE__ */ new Set(["created", "automated", "verified", "waived"]);
-var VALID_CHAIN_TYPES = /* @__PURE__ */ new Set([
-  "desktop_chain",
-  "mock_playwright",
-  "core_e2e",
-  "cli_e2e",
-  "ui_sidecar_bridge",
-  "partial_sidecar",
-  "partial_rust"
-]);
-var DEPRECATED_CHAIN_TYPE_ALIASES = {
-  core_only: "core_e2e",
-  frontend_only: "mock_playwright"
-};
 function isDesktopChainType(chainType) {
   const normalizedChainType = chainType.trim().toLowerCase();
   return normalizedChainType === "desktop_chain" || normalizedChainType === "";
@@ -6193,10 +7164,10 @@ async function validatePartialRustEvidence(tcFields, tcKey, root, allFiles) {
     if (!normalizedPath) {
       return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
     }
-    const fullPath = join5(root, normalizedPath);
+    const fullPath = join6(root, normalizedPath);
     let content;
     try {
-      content = await readFile2(fullPath, "utf-8");
+      content = await readFile3(fullPath, "utf-8");
     } catch {
       return { hasValidPartialRust: false, detail: `partial_rust file not found: ${ref.file}` };
     }
@@ -6305,9 +7276,9 @@ function escapeRegExp(value) {
 }
 async function hasMarkdownTc(tcKey, e2eDir) {
   const [batch, tcId] = tcKey.split(":");
-  const filePath = join5(e2eDir, `${batch}.md`);
+  const filePath = join6(e2eDir, `${batch}.md`);
   try {
-    const raw = await readFile2(filePath, "utf-8");
+    const raw = await readFile3(filePath, "utf-8");
     const tcRegex = new RegExp(`^#{2,3}\\s+${escapeRegExp(tcId)}\\s*[:\uFF1A]?`, "m");
     return tcRegex.test(raw);
   } catch {
@@ -6327,13 +7298,13 @@ async function findFiles(root, patterns) {
   return [...matched].sort();
 }
 async function walk(root, current = root) {
-  const entries = await readdir(current, { withFileTypes: true });
+  const entries = await readdir2(current, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
     if (entry.name === "node_modules" || entry.name === "dist" || entry.name === ".git" || entry.name === ".artifact-graph") {
       continue;
     }
-    const fullPath = join5(current, entry.name);
+    const fullPath = join6(current, entry.name);
     if (entry.isDirectory()) {
       files.push(...await walk(root, fullPath));
     } else {
@@ -6552,7 +7523,7 @@ function normalizeDesignCode(value) {
   if (!raw) {
     return "";
   }
-  return basename2(raw, extname(raw));
+  return basename3(raw, extname(raw));
 }
 function toUid(type, code) {
   return `${type}:${code}`;
@@ -6649,30 +7620,6 @@ function discoverTargets(graph, options) {
   }
   return result;
 }
-var CONTEXT_CATEGORIES = {
-  feature: "prd",
-  scenario: "scenario",
-  decision: "decision",
-  design: "design",
-  entity: "entity",
-  "interface_contracts": "contract",
-  "data_contracts": "contract",
-  "application_state_machines": "contract",
-  "error_model": "contract",
-  "report-contracts": "contract",
-  "ui-flow-contracts": "contract",
-  "non-functional-budgets": "contract",
-  "domain-glossary": "domain",
-  "bounded-context-map": "domain",
-  "domain-invariants": "domain",
-  "generation-packet-spec": "domain",
-  "rule-golden-cases": "verification",
-  "test-strategy": "verification",
-  "verification-fixtures": "verification",
-  "implementation-blueprint": "blueprint",
-  "traceability-matrix-v2": "matrix"
-};
-var TIER_ORDER = ["baseline", "target", "direct", "matrix", "transitive"];
 function resolveArtifactContext(graph, opts) {
   const mode = opts.mode ?? "full";
   const maxPerCategory = opts.maxPerCategory ?? 20;
@@ -6841,7 +7788,7 @@ function resolveArtifactContext(graph, opts) {
     }
     if (root) {
       for (const ap of ALWAYS_PRESENT_ITEMS) {
-        const fullPath = join5(root, ap.path);
+        const fullPath = join6(root, ap.path);
         let stat;
         try {
           stat = statSync(fullPath);
@@ -7071,10 +8018,118 @@ function formatContextMarkdown(manifest) {
   }
   return lines.join("\n");
 }
+var TARGET_ARTIFACT_TYPES, NON_TARGET_ROLES, DEFAULT_SCHEMA, VALID_TC_STATUSES, VALID_CHAIN_TYPES, DEPRECATED_CHAIN_TYPE_ALIASES, CONTEXT_CATEGORIES, TIER_ORDER;
+var init_index = __esm({
+  "src/index.ts"() {
+    "use strict";
+    init_packet_constants();
+    init_packet_validator();
+    init_glob_matcher();
+    init_packet_constants();
+    init_target_selector();
+    init_packet_assembler();
+    init_packet_audit();
+    init_packet_validator();
+    init_packet_prompt();
+    init_packet_prompt_validator();
+    init_versioned_traceability();
+    init_cli_resolver();
+    init_git_changes();
+    init_git_hook_path();
+    init_hook_installer();
+    init_review_result_validator();
+    init_contract_kernel();
+    TARGET_ARTIFACT_TYPES = VALID_PACKET_TARGET_TYPES;
+    NON_TARGET_ROLES = ["context", "candidate", "not-recommended"];
+    DEFAULT_SCHEMA = {
+      types: {
+        decision: { paths: ["artifacts/decisions/**/*.md"], displayName: "\u51B3\u7B56\u6587\u6863", role: "decision", layer: "decision", aliases: ["decisions", "adr"] },
+        entity: { paths: ["artifacts/entities/entity-registry.md"], displayName: "\u5B9E\u4F53\u6CE8\u518C\u8868", role: "context", layer: "domain", aliases: ["entity-registry"] },
+        feature: { paths: ["artifacts/prd/features/**/*.md"], displayName: "\u529F\u80FD\u7279\u6027", role: "feature", layer: "prd", aliases: ["prd-feature", "prd_features"] },
+        scenario: { paths: ["artifacts/scenarios/**/*.md"], displayName: "\u573A\u666F\u5267\u672C", role: "scenario", layer: "scenario", aliases: ["scenarios", "scenario-script"] },
+        design: { paths: ["artifacts/design/**/*.md"], displayName: "\u8BBE\u8BA1\u89C4\u683C", role: "design", layer: "design", aliases: ["design-spec", "design_docs"] },
+        test: { paths: ["heimdall/packages/**/*.test.ts"], displayName: "\u4EE3\u7801\u6CE8\u91CA\u8FFD\u6EAF", role: "context", layer: "implementation", aliases: ["code-test", "code-trace", "unit-test"] },
+        e2e_test: { paths: ["artifacts/tests/e2e/*.md"], displayName: "E2E \u6D4B\u8BD5\u89C4\u683C", role: "e2e_test", layer: "verification", aliases: ["e2e-test", "e2e_tests", "tc"] },
+        e2e_registry: { paths: ["artifacts/tests/e2e/e2e-test-registry.json"], displayName: "E2E \u6D4B\u8BD5\u6CE8\u518C\u8868", role: "context", layer: "verification", aliases: ["e2e-registry"] },
+        "rule-golden-cases": { paths: ["artifacts/tests/rule-golden-cases.md"], displayName: "\u89C4\u5219\u9EC4\u91D1\u6D4B\u8BD5\u7528\u4F8B", role: "context", layer: "verification", aliases: ["rule_golden_cases"] },
+        "test-strategy": { paths: ["artifacts/design/test-strategy.md"], displayName: "\u6D4B\u8BD5\u7B56\u7565", role: "context", layer: "verification", aliases: ["test_strategy"] },
+        "traceability-matrix-v2": { paths: ["artifacts/traceability-matrix-v2.md"], displayName: "\u8FFD\u6EAF\u77E9\u9635 v2", role: "context", layer: "traceability", aliases: ["traceability_matrix_v2"] }
+      },
+      idPatterns: {
+        decision: "^D-[A-Z]+-\\d+$",
+        entity: "^E-\\d{3,}$",
+        feature: "^[A-Z]{1,4}\\d+$",
+        scenario: "^S-\\d+[a-z]?$",
+        design: "^[A-Za-z0-9._-]+$",
+        test: "^.+\\.test\\.ts$",
+        e2e_test: "^.+:(TC-\\d+[a-z]?|FILE)$",
+        e2e_registry: "^e2e-test-registry$",
+        "rule-golden-cases": "^[A-Z]+-\\d{3}:(pass|fail|edge)$",
+        "test-strategy": "^(unit|integration|e2e|desktop_chain|rule|contract)$",
+        "traceability-matrix-v2": "^.+$"
+      },
+      relationFields: {
+        feature: ["scenarios", "decisions", "depends_on", "design_docs"],
+        scenario: ["\u5173\u8054\u529F\u80FD", "\u5173\u8054\u51B3\u7B56"],
+        design: ["related_features", "related_scenarios"],
+        test: ["@scenario", "@feature", "@entity", "@decision"],
+        e2e_test: ["test_batch", "scope", "ac_coverage", "related_scenarios", "related_decisions", "related_entities", "\u8986\u76D6\u573A\u666F", "\u8986\u76D6\u529F\u80FD"],
+        e2e_registry: ["batches"]
+      },
+      allowedEdges: [],
+      forbiddenEdges: [{ from: "scenario", to: "entity", kind: "references" }],
+      statuses: ["planned", "active", "done", "deprecated"],
+      idRanges: {},
+      e2e: {
+        report_uncovered_scenarios: true,
+        report_uncovered_features: true,
+        runners: []
+      }
+    };
+    VALID_TC_STATUSES = /* @__PURE__ */ new Set(["created", "automated", "verified", "waived"]);
+    VALID_CHAIN_TYPES = /* @__PURE__ */ new Set([
+      "desktop_chain",
+      "mock_playwright",
+      "core_e2e",
+      "cli_e2e",
+      "ui_sidecar_bridge",
+      "partial_sidecar",
+      "partial_rust"
+    ]);
+    DEPRECATED_CHAIN_TYPE_ALIASES = {
+      core_only: "core_e2e",
+      frontend_only: "mock_playwright"
+    };
+    CONTEXT_CATEGORIES = {
+      feature: "prd",
+      scenario: "scenario",
+      decision: "decision",
+      design: "design",
+      entity: "entity",
+      "interface_contracts": "contract",
+      "data_contracts": "contract",
+      "application_state_machines": "contract",
+      "error_model": "contract",
+      "report-contracts": "contract",
+      "ui-flow-contracts": "contract",
+      "non-functional-budgets": "contract",
+      "domain-glossary": "domain",
+      "bounded-context-map": "domain",
+      "domain-invariants": "domain",
+      "generation-packet-spec": "domain",
+      "rule-golden-cases": "verification",
+      "test-strategy": "verification",
+      "verification-fixtures": "verification",
+      "implementation-blueprint": "blueprint",
+      "traceability-matrix-v2": "matrix"
+    };
+    TIER_ORDER = ["baseline", "target", "direct", "matrix", "transitive"];
+  }
+});
 
 // src/packet-prompt-audit.ts
 import { mkdir as mkdir5, writeFile as writeFile4 } from "fs/promises";
-import { join as join6 } from "path";
+import { join as join7 } from "path";
 function promptFilename(target) {
   return `prompt-${target.type}-${target.id}.md`;
 }
@@ -7126,7 +8181,7 @@ async function auditSinglePromptTarget(target, graph, options) {
     }
     if (options.outDir) {
       const filename = promptFilename(target);
-      const outPath = join6(options.outDir, filename);
+      const outPath = join7(options.outDir, filename);
       await writeFile4(outPath, prompt, "utf-8");
       entry.outputPath = outPath;
     }
@@ -7232,9 +8287,9 @@ async function auditPromptBatch(root, targets, options, graph) {
   };
   if (options.outDir) {
     await mkdir5(options.outDir, { recursive: true });
-    const jsonPath = join6(options.outDir, "prompt-audit-summary.json");
+    const jsonPath = join7(options.outDir, "prompt-audit-summary.json");
     await writeFile4(jsonPath, JSON.stringify(summary, null, 2) + "\n", "utf-8");
-    const mdPath = join6(options.outDir, "prompt-audit-summary.md");
+    const mdPath = join7(options.outDir, "prompt-audit-summary.md");
     await writeFile4(mdPath, renderPromptAuditSummaryMarkdown(summary), "utf-8");
   }
   return summary;
@@ -7258,8 +8313,26 @@ async function discoverAndAuditPromptBatch(root, options) {
     universalBaseline: effectiveBaseline
   }, graph);
 }
+var init_packet_prompt_audit = __esm({
+  "src/packet-prompt-audit.ts"() {
+    "use strict";
+    init_index();
+    init_packet_prompt();
+    init_packet_prompt_validator();
+    init_packet_audit();
+  }
+});
 
 // src/cli.ts
+var cli_exports = {};
+__export(cli_exports, {
+  runCli: () => runCli
+});
+import yaml2 from "js-yaml";
+import { realpathSync } from "fs";
+import { access as access2, mkdir as mkdir6, readFile as readFile4, writeFile as writeFile5 } from "fs/promises";
+import { dirname as dirname4, isAbsolute as isAbsolute4, join as join8 } from "path";
+import { fileURLToPath } from "url";
 async function runCli(argv, io = {}) {
   const parsed = parseArgs(argv);
   const cwd = io.cwd ?? process.cwd();
@@ -7275,7 +8348,7 @@ async function runCli(argv, io = {}) {
     switch (parsed.command) {
       case "init": {
         await initConfig(root);
-        out(`Created ${join7(root, "artifact-graph.config.yaml")}
+        out(`Created ${join8(root, "artifact-graph.config.yaml")}
 `);
         return 0;
       }
@@ -7599,7 +8672,7 @@ async function runCli(argv, io = {}) {
         if (packetJsonPath) {
           let rawJson;
           try {
-            rawJson = await readFile3(packetJsonPath, "utf-8");
+            rawJson = await readFile4(packetJsonPath, "utf-8");
           } catch (readErr) {
             err(`\u9519\u8BEF\uFF1A\u65E0\u6CD5\u8BFB\u53D6 packet \u6587\u4EF6: "${packetJsonPath}" \u2014 ${readErr.message}
 `);
@@ -7800,7 +8873,7 @@ async function runCli(argv, io = {}) {
             universalBaseline: discoverConfig.context?.universal_baseline
           });
         } else {
-          const targetsContent = await readFile3(targetsFile, "utf-8");
+          const targetsContent = await readFile4(targetsFile, "utf-8");
           const auditConfig2 = await loadConfig(root);
           const parseResult = parseTargetsFile(targetsContent, auditConfig2);
           if (parseResult.errors.length > 0) {
@@ -7925,7 +8998,7 @@ async function runCli(argv, io = {}) {
         } else {
           let ppaTargetsContent;
           try {
-            ppaTargetsContent = await readFile3(ppaTargetsFile, "utf-8");
+            ppaTargetsContent = await readFile4(ppaTargetsFile, "utf-8");
           } catch (readErr) {
             err(`\u9519\u8BEF\uFF1A\u65E0\u6CD5\u8BFB\u53D6 targets \u6587\u4EF6: "${ppaTargetsFile}" \u2014 ${readErr.message}
 `);
@@ -8172,7 +9245,7 @@ async function runCli(argv, io = {}) {
         const prepared = [];
         for (const hookName of hooks) {
           const templatePath = fileURLToPath(new URL(`../templates/git-hooks/${hookName}.sh`, import.meta.url));
-          const block = await readFile3(templatePath, "utf-8");
+          const block = await readFile4(templatePath, "utf-8");
           prepared.push(await prepareManagedHookBlock({
             hookPath: await resolveGitHookPath(root, hookName),
             block,
@@ -8213,10 +9286,10 @@ async function runCli(argv, io = {}) {
           err("Usage: artifact-graph validate-review-result --file <path> [--format json]\n");
           return 1;
         }
-        const resolvedPath = isAbsolute4(filePath) ? filePath : join7(root, filePath);
+        const resolvedPath = isAbsolute4(filePath) ? filePath : join8(root, filePath);
         let content;
         try {
-          content = await readFile3(resolvedPath, "utf-8");
+          content = await readFile4(resolvedPath, "utf-8");
         } catch (readErr) {
           err(`Error: Cannot read file: "${resolvedPath}" \u2014 ${readErr.message}
 `);
@@ -8251,11 +9324,11 @@ async function runCli(argv, io = {}) {
         const deterministic = checkMode || parsed.flags.deterministic === true;
         const registry = await generateE2eRegistry(root, { deterministic });
         const output = JSON.stringify(registry, null, 2) + "\n";
-        const outPath = typeof parsed.flags.out === "string" ? parsed.flags.out : join7(root, "artifacts/tests/e2e/e2e-test-registry.json");
+        const outPath = typeof parsed.flags.out === "string" ? parsed.flags.out : join8(root, "artifacts/tests/e2e/e2e-test-registry.json");
         if (checkMode) {
           let existing = "";
           try {
-            existing = await readFile3(outPath, "utf-8");
+            existing = await readFile4(outPath, "utf-8");
           } catch {
             err(`Check failed: ${outPath} does not exist or is not readable
 `);
@@ -8279,11 +9352,266 @@ async function runCli(argv, io = {}) {
         }
         return 0;
       }
+      case "contract": {
+        const contractAction = parsed.positional[0];
+        const contractFormat = typeof parsed.flags.format === "string" ? parsed.flags.format : "json";
+        if (contractFormat !== "json") {
+          out(`${JSON.stringify({ ok: false, error: { code: "INVALID_FORMAT", path: "/format", message: `Invalid --format: "${contractFormat}". Allowed values: json` } }, null, 2)}
+`);
+          return 1;
+        }
+        const packageDir = dirname4(fileURLToPath(import.meta.url));
+        const contractsDir = typeof parsed.flags["contracts-dir"] === "string" ? parsed.flags["contracts-dir"] : join8(packageDir, "..", "contracts");
+        const revisionDigest = typeof parsed.flags["revision-digest"] === "string" ? parsed.flags["revision-digest"] : void 0;
+        async function resolveContract(contractId) {
+          const catalog = await loadContractCatalog(contractsDir);
+          if (revisionDigest) {
+            return catalog.resolveByDigest(contractId, revisionDigest);
+          }
+          try {
+            return catalog.resolve(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === "AMBIGUOUS_REVISION") {
+              throw e;
+            }
+            return void 0;
+          }
+        }
+        if (contractAction === "list") {
+          const catalog = await loadContractCatalog(contractsDir);
+          out(`${JSON.stringify({ ok: true, data: catalog.toJSON() }, null, 2)}
+`);
+          return 0;
+        }
+        if (contractAction === "explain") {
+          const contractId = typeof parsed.flags.contract === "string" ? parsed.flags.contract : void 0;
+          if (!contractId) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: "--contract is required" } }, null, 2)}
+`);
+            return 1;
+          }
+          let contract;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === "AMBIGUOUS_REVISION") {
+              out(`${JSON.stringify({ ok: false, error: { code: "AMBIGUOUS_REVISION", path: "/contract", message: e.message, details: e.details } }, null, 2)}
+`);
+              return 1;
+            }
+            contract = void 0;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: `Contract "${contractId}" not found` } }, null, 2)}
+`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: {
+            identity: contract.identity,
+            schema: { $id: contract.schema.$id, title: contract.schema.title, version: contract.schema.version }
+          } }, null, 2)}
+`);
+          return 0;
+        }
+        if (contractAction === "validate") {
+          const contractId = typeof parsed.flags.contract === "string" ? parsed.flags.contract : void 0;
+          const dataRaw = typeof parsed.flags.data === "string" ? parsed.flags.data : void 0;
+          if (!contractId || !dataRaw) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: "--contract and --data are required" } }, null, 2)}
+`);
+            return 1;
+          }
+          let contract;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === "AMBIGUOUS_REVISION") {
+              out(`${JSON.stringify({ ok: false, error: { code: "AMBIGUOUS_REVISION", path: "/contract", message: e.message, details: e.details } }, null, 2)}
+`);
+              return 1;
+            }
+            contract = void 0;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: `Contract "${contractId}" not found` } }, null, 2)}
+`);
+            return 1;
+          }
+          let data;
+          try {
+            data = JSON.parse(dataRaw);
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: "SCHEMA_VALIDATION_FAILED", path: "/data", message: "--data is not valid JSON" } }, null, 2)}
+`);
+            return 1;
+          }
+          const schemaResult = validateContractAgainstSchema(data, contract);
+          if (!schemaResult.valid) {
+            out(`${JSON.stringify({ ok: false, errors: schemaResult.errors.map((e) => ({ code: "SCHEMA_VALIDATION_FAILED", path: "/", message: e })) }, null, 2)}
+`);
+            return 1;
+          }
+          const dataObj = data;
+          if (Array.isArray(dataObj.relations)) {
+            const relationResult = validateRelations(dataObj.relations, contract);
+            if (!relationResult.valid) {
+              out(`${JSON.stringify({ ok: false, errors: relationResult.issues }, null, 2)}
+`);
+              return 1;
+            }
+          }
+          out(`${JSON.stringify({ ok: true, data: { valid: true, issues: [] } }, null, 2)}
+`);
+          return 0;
+        }
+        if (contractAction === "check-policy") {
+          const contractId = typeof parsed.flags.contract === "string" ? parsed.flags.contract : void 0;
+          const policyRaw = typeof parsed.flags.policy === "string" ? parsed.flags.policy : void 0;
+          if (!contractId || !policyRaw) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: "--contract and --policy are required" } }, null, 2)}
+`);
+            return 1;
+          }
+          let contract;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === "AMBIGUOUS_REVISION") {
+              out(`${JSON.stringify({ ok: false, error: { code: "AMBIGUOUS_REVISION", path: "/contract", message: e.message, details: e.details } }, null, 2)}
+`);
+              return 1;
+            }
+            contract = void 0;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: `Contract "${contractId}" not found` } }, null, 2)}
+`);
+            return 1;
+          }
+          let policy;
+          try {
+            policy = JSON.parse(policyRaw);
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: "SCHEMA_VALIDATION_FAILED", path: "/policy", message: "--policy is not valid JSON" } }, null, 2)}
+`);
+            return 1;
+          }
+          const result = validatePolicyCompatibility(policy, contract);
+          if (!result.compatible) {
+            out(`${JSON.stringify({ ok: false, errors: result.errors.map((message) => ({ code: "POLICY_INCOMPATIBLE", path: "/policy", message })) }, null, 2)}
+`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: { compatible: true, warnings: result.warnings } }, null, 2)}
+`);
+          return 0;
+        }
+        if (contractAction === "normalize") {
+          const contractId = typeof parsed.flags.contract === "string" ? parsed.flags.contract : void 0;
+          const dataRaw = typeof parsed.flags.data === "string" ? parsed.flags.data : void 0;
+          if (!contractId || !dataRaw) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: "--contract and --data are required" } }, null, 2)}
+`);
+            return 1;
+          }
+          let data;
+          try {
+            data = JSON.parse(dataRaw);
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: "SCHEMA_VALIDATION_FAILED", path: "/data", message: "--data is not valid JSON" } }, null, 2)}
+`);
+            return 1;
+          }
+          let contract;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === "AMBIGUOUS_REVISION") {
+              out(`${JSON.stringify({ ok: false, error: { code: "AMBIGUOUS_REVISION", path: "/contract", message: e.message, details: e.details } }, null, 2)}
+`);
+              return 1;
+            }
+            contract = void 0;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: `Contract "${contractId}" not found` } }, null, 2)}
+`);
+            return 1;
+          }
+          const { normalizeE2eLegacyArtifact: normalizeE2eLegacyArtifact2 } = await Promise.resolve().then(() => (init_contract_kernel(), contract_kernel_exports));
+          const result = normalizeE2eLegacyArtifact2(data, contract);
+          if (!result.success) {
+            out(`${JSON.stringify({ ok: false, errors: result.errors }, null, 2)}
+`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: result }, null, 2)}
+`);
+          return 0;
+        }
+        if (contractAction === "validate-markers") {
+          const contractId = typeof parsed.flags.contract === "string" ? parsed.flags.contract : void 0;
+          const markdownPath = typeof parsed.flags.markdown === "string" ? parsed.flags.markdown : void 0;
+          if (!contractId || !markdownPath) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: "--contract and --markdown are required" } }, null, 2)}
+`);
+            return 1;
+          }
+          let contract;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === "AMBIGUOUS_REVISION") {
+              out(`${JSON.stringify({ ok: false, error: { code: "AMBIGUOUS_REVISION", path: "/contract", message: e.message, details: e.details } }, null, 2)}
+`);
+              return 1;
+            }
+            contract = void 0;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: "CONTRACT_NOT_FOUND", path: "/contract", message: `Contract "${contractId}" not found` } }, null, 2)}
+`);
+            return 1;
+          }
+          let markdownContent;
+          try {
+            markdownContent = await readFile4(markdownPath, "utf-8");
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: "SCHEMA_VALIDATION_FAILED", path: "/markdown", message: `Could not read markdown file "${markdownPath}"` } }, null, 2)}
+`);
+            return 1;
+          }
+          const { validateSemanticMarkers: validateSemanticMarkers2 } = await Promise.resolve().then(() => (init_contract_kernel(), contract_kernel_exports));
+          const result = validateSemanticMarkers2(markdownContent, contract);
+          if (!result.valid) {
+            out(`${JSON.stringify({ ok: false, errors: result.errors.map((e) => ({ code: "MARKER_VALIDATION_FAILED", path: "/", message: e })) }, null, 2)}
+`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: { valid: true, issues: [] } }, null, 2)}
+`);
+          return 0;
+        }
+        out(`${JSON.stringify({ ok: false, error: { code: "INVALID_COMMAND", path: "/command", message: "Usage: artifact-graph contract list|explain|validate|normalize|check-policy|validate-markers [options]" } }, null, 2)}
+`);
+        return 1;
+      }
       default:
         err(helpText());
         return 1;
     }
   } catch (error) {
+    if (parsed.command === "contract") {
+      const contractError = error;
+      out(`${JSON.stringify({ ok: false, error: {
+        code: contractError.code ?? "CONTRACT_INTERNAL_ERROR",
+        path: "/contract",
+        message: contractError.message,
+        ...contractError.details ? { details: contractError.details } : {}
+      } }, null, 2)}
+`);
+      return 1;
+    }
     err(`${error.message}
 `);
     return 1;
@@ -8296,7 +9624,7 @@ function isGraphRelevantPath(path) {
   return path === "artifact-graph.config.yaml" || path === VERSION_LOCK_PATH || path.startsWith("artifacts/") || /\.(md|mdx|json|ya?ml|ts|tsx|js|jsx|mts|cts|rs|py|go)$/.test(path);
 }
 async function initConfig(root) {
-  const configPath = join7(root, "artifact-graph.config.yaml");
+  const configPath = join8(root, "artifact-graph.config.yaml");
   try {
     await access2(configPath);
     throw new Error(`Config already exists: ${configPath}`);
@@ -8360,6 +9688,12 @@ Commands:
   doctor [--format json|markdown]
   validate-review-result --file <path> [--format json]
   generate-e2e-registry [--deterministic] [--out <path>] [--check]
+  contract list [--contracts-dir <path>] [--format json]
+  contract explain --contract <major-id> [--contracts-dir <path>] [--format json]
+  contract validate --contract <major-id> --data <json> [--contracts-dir <path>] [--format json]
+  contract normalize --contract <major-id> --data <json> [--format json]
+  contract check-policy --contract <major-id> --policy <json> [--contracts-dir <path>] [--format json]
+  contract validate-markers --contract <major-id> --markdown <path> [--contracts-dir <path>] [--format json]
 `;
 }
 function isCliEntrypoint(argvPath) {
@@ -8372,11 +9706,30 @@ function isCliEntrypoint(argvPath) {
     return false;
   }
 }
-if (isCliEntrypoint(process.argv[1])) {
-  void runCli(process.argv.slice(2)).then((code) => {
-    process.exitCode = code;
-  });
-}
+var init_cli = __esm({
+  "src/cli.ts"() {
+    init_index();
+    init_contract_kernel();
+    init_target_selector();
+    init_packet_audit();
+    init_packet_validator();
+    init_packet_prompt();
+    init_packet_prompt_validator();
+    init_packet_prompt_audit();
+    init_cli_resolver();
+    init_review_result_validator();
+    init_git_changes();
+    init_git_hook_path();
+    init_hook_installer();
+    init_versioned_traceability();
+    if (isCliEntrypoint(process.argv[1])) {
+      void runCli(process.argv.slice(2)).then((code) => {
+        process.exitCode = code;
+      });
+    }
+  }
+});
+init_cli();
 export {
   runCli
 };

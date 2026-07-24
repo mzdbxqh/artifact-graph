@@ -541,6 +541,52 @@ export function NewScanPage() {
     expect(parsed.postAudit.issues.some((issue: { status: string }) => issue.status === 'missing_lock')).toBe(true);
   });
 
+  it('collects untracked artifacts for CLI worktree refresh', async () => {
+    const root = await versionRepo('cli-refresh-worktree-untracked');
+    await write(
+      root,
+      'heimdall/packages/desktop/src/pages/NewScanPage.tsx',
+      `// @feature A1 @feature A2
+export function NewScanPage() {
+  return 'scan';
+}
+`,
+    );
+    await git(root, ['init']);
+    await git(root, ['config', 'user.email', 'test@example.com']);
+    await git(root, ['config', 'user.name', 'Test User']);
+    await git(root, ['add', '.']);
+    await git(root, ['commit', '-m', 'initial']);
+    const untrackedArtifact = 'artifacts/prd/features/A2-export.md';
+    await write(
+      root,
+      untrackedArtifact,
+      `---
+id: A2
+title: Export
+status: done
+---
+# Export
+`,
+    );
+
+    const result = await capture([
+      'version-lock',
+      'refresh',
+      '--root',
+      root,
+      '--changed-only',
+      '--worktree',
+      '--format',
+      'json',
+    ], root);
+
+    expect(result.code).toBe(1);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.changedPaths).toEqual([untrackedArtifact]);
+    expect(parsed.addedLocks).toContain('code:heimdall/packages/desktop/src/pages/NewScanPage.tsx#implements#feature:A2');
+  });
+
   it('rejects staged refresh when a relevant staged path also has unstaged changes', async () => {
     const root = await versionRepo('cli-refresh-staged-divergence');
     await git(root, ['init']);
@@ -627,6 +673,52 @@ scenarios: [S-01]
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('graph-relevant unstaged changes');
     expect(result.stderr).toContain('artifacts/prd/features/A1-scan.md');
+  });
+
+  it('rejects staged refresh when a graph-relevant file is untracked', async () => {
+    const root = await versionRepo('cli-refresh-staged-untracked');
+    await git(root, ['init']);
+    await git(root, ['config', 'user.email', 'test@example.com']);
+    await git(root, ['config', 'user.name', 'Test User']);
+    await git(root, ['add', '.']);
+    await git(root, ['commit', '-m', 'initial']);
+    await write(
+      root,
+      'heimdall/packages/desktop/src/pages/NewScanPage.tsx',
+      `// @feature A1
+export function NewScanPage() {
+  return 'staged source';
+}
+`,
+    );
+    await git(root, ['add', 'heimdall/packages/desktop/src/pages/NewScanPage.tsx']);
+    const untrackedArtifact = 'artifacts/prd/features/A2-untracked.md';
+    await write(
+      root,
+      untrackedArtifact,
+      `---
+id: A2
+title: Untracked graph artifact
+status: done
+---
+# Untracked graph artifact
+`,
+    );
+
+    const result = await capture([
+      'version-lock',
+      'refresh',
+      '--root',
+      root,
+      '--changed-only',
+      '--staged',
+      '--format',
+      'json',
+    ], root);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('graph-relevant unstaged changes');
+    expect(result.stderr).toContain(untrackedArtifact);
   });
 });
 

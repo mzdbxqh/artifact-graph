@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+## 0.7.0
+
+### Added
+
+- **Contract kernel**: new deterministic contract kernel providing contract identity, a contract
+  registry, canonical IR normalization, revision digests, and policy compatibility checks. Exposed
+  through the new `artifact-graph contract` CLI subcommand group and public library exports.
+
+### Changed
+
+- **Version-lock changed-only collects untracked paths**: `version-lock refresh --changed-only`
+  (worktree and staged modes) now also collects untracked files, so newly added artifacts can no
+  longer silently bypass lock refresh.
+- **Organization migration to `ifoohoo`**: the public repository transferred to the `ifoohoo`
+  GitHub organization (`ifoohoo/artifact-graph`, name unchanged). Copyright is now held by
+  广州市风荷科技有限公司 (Guangzhou Fenghe Technology Co., Ltd.) together with the project
+  contributors; the NOTICE file states that the organization transfer is an administrative hosting
+  change, not a copyright assignment. Package metadata, installation docs, and repository
+  references were updated accordingly; the npm package name `artifact-graph` is unchanged.
+
 ## 0.6.1
 
 ### Fixed

@@ -1,0 +1,315 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "artifact.e2e-test@1",
+  "title": "Artifact Contract: E2E Test Specification",
+  "description": "Minimal schema for E2E test specification artifacts",
+  "version": "1.0.0",
+  "contractIdentity": {
+    "major": "artifact.e2e-test@1",
+    "authority": "artifact",
+    "namespace": "artifact",
+    "revisionDigest": "sha256:374b99424519e42b40b621774fb602d62dfa23f48f792095f717bbabbe9e3f2a",
+    "relationRules": {
+      "derives_from": {
+        "allowedTargetTypes": ["scenario", "design", "decision"],
+        "min": 1,
+        "max": 10,
+        "anchorPolicy": "optional"
+      },
+      "verifies": {
+        "allowedTargetTypes": ["feature", "scenario"],
+        "min": 1,
+        "max": 5,
+        "anchorPolicy": "required"
+      },
+      "implemented_by": {
+        "allowedTargetTypes": ["code"],
+        "min": 0,
+        "max": 5,
+        "anchorPolicy": "optional"
+      },
+      "references": {
+        "allowedTargetTypes": ["feature", "scenario", "decision", "design", "e2e_test", "test"],
+        "min": 0,
+        "max": 20,
+        "anchorPolicy": "optional"
+      },
+      "covers": {
+        "allowedTargetTypes": ["feature", "scenario"],
+        "min": 0,
+        "max": 10,
+        "anchorPolicy": "optional"
+      }
+    },
+    "semanticMarkers": {
+      "scope": {
+        "jsonPointer": "/scope",
+        "markdownMarker": "scope",
+        "required": true
+      },
+      "system_boundary": {
+        "jsonPointer": "/system_boundary",
+        "markdownMarker": "system-boundary",
+        "required": true
+      },
+      "coverage": {
+        "jsonPointer": "/coverage",
+        "markdownMarker": "coverage",
+        "required": true
+      },
+      "environment_data": {
+        "jsonPointer": "/environment_data",
+        "markdownMarker": "environment-data",
+        "required": true
+      },
+      "test_cases": {
+        "jsonPointer": "/test_cases",
+        "markdownMarker": "test-cases",
+        "required": true
+      },
+      "evidence_contract": {
+        "jsonPointer": "/evidence_contract",
+        "markdownMarker": "evidence-contract",
+        "required": true
+      }
+    }
+  },
+  "type": "object",
+  "required": ["metadata", "scope", "system_boundary", "coverage", "environment_data", "relations", "test_cases", "evidence_contract"],
+  "properties": {
+    "metadata": {
+      "type": "object",
+      "required": ["id", "title", "status"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+:(TC-\\d+[a-z]?|FILE)$"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": ["planned", "active", "done", "deprecated"]
+        },
+        "test_batch": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "scope": {
+      "type": "object",
+      "required": ["business_goal", "actors"],
+      "properties": {
+        "business_goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "actors": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "system_boundaries": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "non_goals": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "system_boundary": {
+      "type": "object",
+      "required": ["components"],
+      "properties": {
+        "components": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "external_dependencies": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "trust_boundaries": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "coverage": {
+      "type": "object",
+      "required": [],
+      "properties": {
+        "ac_coverage": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        },
+        "related_scenarios": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "related_features": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "related_decisions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "environment_data": {
+      "type": "object",
+      "properties": {
+        "topology": {
+          "type": "string"
+        },
+        "fixtures": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "identities": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "isolation_strategy": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "relations": {
+      "type": "array",
+      "description": "Machine-readable relation declarations: kind, target type/id, optional anchor, and contract-level cardinality rules",
+      "minItems": 2,
+      "items": {
+        "type": "object",
+        "required": ["kind", "target_type", "target_id"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": ["derives_from", "verifies", "implemented_by", "references", "covers"]
+          },
+          "target_type": {
+            "type": "string",
+            "enum": ["feature", "scenario", "decision", "design", "e2e_test", "test", "code"]
+          },
+          "target_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "anchor": {
+            "type": "string",
+            "description": "Optional anchor point (e.g., section marker, line reference)"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "test_cases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/testCase"
+      },
+      "minItems": 1
+    },
+    "evidence_contract": {
+      "type": "object",
+      "required": ["required_artifacts"],
+      "properties": {
+        "required_artifacts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "runner_binding": {
+          "type": "string"
+        },
+        "proof_requirements": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "definitions": {
+    "testCase": {
+      "type": "object",
+      "required": ["case_id", "goal", "preconditions", "actions", "oracles", "cleanup", "priority", "trace_targets"],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "pattern": "^TC-\\d+[a-z]?$"
+        },
+        "goal": {
+          "type": "string",
+          "minLength": 1
+        },
+        "preconditions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "actions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["step", "action"],
+            "properties": {
+              "step": { "type": "integer", "minimum": 1 },
+              "action": { "type": "string", "minLength": 1 },
+              "expected_result": { "type": "string" }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "oracles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["observable", "criterion"],
+            "properties": {
+              "observable": { "type": "string", "minLength": 1 },
+              "criterion": { "type": "string", "minLength": 1 },
+              "timeout_ms": { "type": "integer", "minimum": 0 }
+            },
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "cleanup": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "priority": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"]
+        },
+        "trace_targets": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1
+        },
+        "path_class": {
+          "type": "string",
+          "enum": ["happy", "error", "recovery", "edge", "security", "performance"]
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

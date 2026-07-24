@@ -30,8 +30,16 @@ export async function collectChangedPaths(root: string, options: CollectChangedP
     throw new Error(`Unable to collect git changed paths (${options.mode}): ${message}`);
   }
 
-  const changedPaths = normalizeGitPathList(stdout);
-  const unstagedPaths = options.mode === 'staged' ? await collectUnstagedPaths(root) : [];
+  const trackedChangedPaths = normalizeGitPathList(stdout);
+  const untrackedPaths = options.mode === 'worktree' || options.mode === 'staged'
+    ? await collectUntrackedPaths(root)
+    : [];
+  const changedPaths = options.mode === 'worktree'
+    ? sortUnique([...trackedChangedPaths, ...untrackedPaths])
+    : trackedChangedPaths;
+  const unstagedPaths = options.mode === 'staged'
+    ? sortUnique([...await collectUnstagedPaths(root), ...untrackedPaths])
+    : [];
   const stagedUnstagedConflictPaths = options.mode === 'staged'
     ? intersect(changedPaths, unstagedPaths)
     : [];
@@ -63,6 +71,15 @@ function gitDiffArgs(options: CollectChangedPathsOptions): string[] {
 async function collectUnstagedPaths(root: string): Promise<string[]> {
   try {
     const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=ACDMRT'], { cwd: root });
+    return normalizeGitPathList(stdout);
+  } catch {
+    return [];
+  }
+}
+
+async function collectUntrackedPaths(root: string): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync('git', ['ls-files', '--others', '--exclude-standard'], { cwd: root });
     return normalizeGitPathList(stdout);
   } catch {
     return [];

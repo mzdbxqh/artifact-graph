@@ -2,7 +2,7 @@
 import yaml from 'js-yaml';
 import { realpathSync } from 'node:fs';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { isAbsolute, join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   assemblePacket,
@@ -23,6 +23,17 @@ import {
   writeGraphCache,
   getTargetArtifactTypes,
 } from './index.js';
+import {
+  CONTRACT_ERROR_CODES,
+  loadContract,
+  loadContractCatalog,
+  validateContractAgainstSchema,
+  validateRelations,
+  validatePolicyCompatibility,
+  computeRevisionDigest,
+  ContractError,
+} from './contract-kernel.js';
+import type { ProjectPolicy, ContractDefinition } from './contract-kernel.js';
 import { resolveCliTarget } from './target-selector.js';
 import { auditPackets, discoverAndAuditPackets, parseTargetsFile } from './packet-audit.js';
 import { validatePacket, validatePacketMarkdown } from './packet-validator.js';
@@ -1041,11 +1052,251 @@ export async function runCli(argv: string[], io: CliIo = {}): Promise<number> {
         }
         return 0;
       }
+      case 'contract': {
+        const contractAction = parsed.positional[0];
+        const contractFormat = typeof parsed.flags.format === 'string' ? parsed.flags.format : 'json';
+        if (contractFormat !== 'json') {
+          out(`${JSON.stringify({ ok: false, error: { code: 'INVALID_FORMAT', path: '/format', message: `Invalid --format: "${contractFormat}". Allowed values: json` } }, null, 2)}\n`);
+          return 1;
+        }
+
+        // Default contracts directory: <package>/contracts
+        const packageDir = dirname(fileURLToPath(import.meta.url));
+        const contractsDir = typeof parsed.flags['contracts-dir'] === 'string'
+          ? parsed.flags['contracts-dir']
+          : join(packageDir, '..', 'contracts');
+
+        // Helper to resolve contract with optional --revision-digest
+        const revisionDigest = typeof parsed.flags['revision-digest'] === 'string'
+          ? parsed.flags['revision-digest']
+          : undefined;
+
+        async function resolveContract(contractId: string): Promise<ContractDefinition | undefined> {
+          const catalog = await loadContractCatalog(contractsDir);
+          if (revisionDigest) {
+            return catalog.resolveByDigest(contractId, revisionDigest);
+          }
+          try {
+            return catalog.resolve(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === 'AMBIGUOUS_REVISION') {
+              // Re-throw to be caught by caller
+              throw e;
+            }
+            return undefined;
+          }
+        }
+
+        if (contractAction === 'list') {
+          const catalog = await loadContractCatalog(contractsDir);
+          out(`${JSON.stringify({ ok: true, data: catalog.toJSON() }, null, 2)}\n`);
+          return 0;
+        }
+
+        if (contractAction === 'explain') {
+          const contractId = typeof parsed.flags.contract === 'string' ? parsed.flags.contract : undefined;
+          if (!contractId) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: '--contract is required' } }, null, 2)}\n`);
+            return 1;
+          }
+          let contract: ContractDefinition | undefined;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === 'AMBIGUOUS_REVISION') {
+              out(`${JSON.stringify({ ok: false, error: { code: 'AMBIGUOUS_REVISION', path: '/contract', message: e.message, details: e.details } }, null, 2)}\n`);
+              return 1;
+            }
+            contract = undefined;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: `Contract "${contractId}" not found` } }, null, 2)}\n`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: {
+            identity: contract.identity,
+            schema: { $id: contract.schema.$id, title: contract.schema.title, version: contract.schema.version },
+          } }, null, 2)}\n`);
+          return 0;
+        }
+
+        if (contractAction === 'validate') {
+          const contractId = typeof parsed.flags.contract === 'string' ? parsed.flags.contract : undefined;
+          const dataRaw = typeof parsed.flags.data === 'string' ? parsed.flags.data : undefined;
+          if (!contractId || !dataRaw) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: '--contract and --data are required' } }, null, 2)}\n`);
+            return 1;
+          }
+          let contract: ContractDefinition | undefined;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === 'AMBIGUOUS_REVISION') {
+              out(`${JSON.stringify({ ok: false, error: { code: 'AMBIGUOUS_REVISION', path: '/contract', message: e.message, details: e.details } }, null, 2)}\n`);
+              return 1;
+            }
+            contract = undefined;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: `Contract "${contractId}" not found` } }, null, 2)}\n`);
+            return 1;
+          }
+          let data: unknown;
+          try {
+            data = JSON.parse(dataRaw);
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: 'SCHEMA_VALIDATION_FAILED', path: '/data', message: '--data is not valid JSON' } }, null, 2)}\n`);
+            return 1;
+          }
+          const schemaResult = validateContractAgainstSchema(data, contract);
+          if (!schemaResult.valid) {
+            out(`${JSON.stringify({ ok: false, errors: schemaResult.errors.map(e => ({ code: 'SCHEMA_VALIDATION_FAILED', path: '/', message: e })) }, null, 2)}\n`);
+            return 1;
+          }
+          // Also validate relations if present
+          const dataObj = data as Record<string, unknown>;
+          if (Array.isArray(dataObj.relations)) {
+            const relationResult = validateRelations(dataObj.relations as Array<Record<string, unknown>>, contract);
+            if (!relationResult.valid) {
+              out(`${JSON.stringify({ ok: false, errors: relationResult.issues }, null, 2)}\n`);
+              return 1;
+            }
+          }
+          out(`${JSON.stringify({ ok: true, data: { valid: true, issues: [] } }, null, 2)}\n`);
+          return 0;
+        }
+
+        if (contractAction === 'check-policy') {
+          const contractId = typeof parsed.flags.contract === 'string' ? parsed.flags.contract : undefined;
+          const policyRaw = typeof parsed.flags.policy === 'string' ? parsed.flags.policy : undefined;
+          if (!contractId || !policyRaw) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: '--contract and --policy are required' } }, null, 2)}\n`);
+            return 1;
+          }
+          let contract: ContractDefinition | undefined;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === 'AMBIGUOUS_REVISION') {
+              out(`${JSON.stringify({ ok: false, error: { code: 'AMBIGUOUS_REVISION', path: '/contract', message: e.message, details: e.details } }, null, 2)}\n`);
+              return 1;
+            }
+            contract = undefined;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: `Contract "${contractId}" not found` } }, null, 2)}\n`);
+            return 1;
+          }
+          let policy: ProjectPolicy;
+          try {
+            policy = JSON.parse(policyRaw) as ProjectPolicy;
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: 'SCHEMA_VALIDATION_FAILED', path: '/policy', message: '--policy is not valid JSON' } }, null, 2)}\n`);
+            return 1;
+          }
+          const result = validatePolicyCompatibility(policy, contract);
+          if (!result.compatible) {
+            out(`${JSON.stringify({ ok: false, errors: result.errors.map(message => ({ code: 'POLICY_INCOMPATIBLE', path: '/policy', message })) }, null, 2)}\n`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: { compatible: true, warnings: result.warnings } }, null, 2)}\n`);
+          return 0;
+        }
+
+        if (contractAction === 'normalize') {
+          const contractId = typeof parsed.flags.contract === 'string' ? parsed.flags.contract : undefined;
+          const dataRaw = typeof parsed.flags.data === 'string' ? parsed.flags.data : undefined;
+          if (!contractId || !dataRaw) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: '--contract and --data are required' } }, null, 2)}\n`);
+            return 1;
+          }
+          let data: Record<string, unknown>;
+          try {
+            data = JSON.parse(dataRaw) as Record<string, unknown>;
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: 'SCHEMA_VALIDATION_FAILED', path: '/data', message: '--data is not valid JSON' } }, null, 2)}\n`);
+            return 1;
+          }
+          let contract: ContractDefinition | undefined;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === 'AMBIGUOUS_REVISION') {
+              out(`${JSON.stringify({ ok: false, error: { code: 'AMBIGUOUS_REVISION', path: '/contract', message: e.message, details: e.details } }, null, 2)}\n`);
+              return 1;
+            }
+            contract = undefined;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: `Contract "${contractId}" not found` } }, null, 2)}\n`);
+            return 1;
+          }
+          const { normalizeE2eLegacyArtifact } = await import('./contract-kernel.js');
+          const result = normalizeE2eLegacyArtifact(data, contract);
+          if (!result.success) {
+            out(`${JSON.stringify({ ok: false, errors: result.errors }, null, 2)}\n`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: result }, null, 2)}\n`);
+          return 0;
+        }
+
+        if (contractAction === 'validate-markers') {
+          const contractId = typeof parsed.flags.contract === 'string' ? parsed.flags.contract : undefined;
+          const markdownPath = typeof parsed.flags.markdown === 'string' ? parsed.flags.markdown : undefined;
+          if (!contractId || !markdownPath) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: '--contract and --markdown are required' } }, null, 2)}\n`);
+            return 1;
+          }
+          let contract: ContractDefinition | undefined;
+          try {
+            contract = await resolveContract(contractId);
+          } catch (e) {
+            if (e instanceof ContractError && e.code === 'AMBIGUOUS_REVISION') {
+              out(`${JSON.stringify({ ok: false, error: { code: 'AMBIGUOUS_REVISION', path: '/contract', message: e.message, details: e.details } }, null, 2)}\n`);
+              return 1;
+            }
+            contract = undefined;
+          }
+          if (!contract) {
+            out(`${JSON.stringify({ ok: false, error: { code: 'CONTRACT_NOT_FOUND', path: '/contract', message: `Contract "${contractId}" not found` } }, null, 2)}\n`);
+            return 1;
+          }
+          let markdownContent: string;
+          try {
+            markdownContent = await readFile(markdownPath, 'utf-8');
+          } catch {
+            out(`${JSON.stringify({ ok: false, error: { code: 'SCHEMA_VALIDATION_FAILED', path: '/markdown', message: `Could not read markdown file "${markdownPath}"` } }, null, 2)}\n`);
+            return 1;
+          }
+          const { validateSemanticMarkers } = await import('./contract-kernel.js');
+          const result = validateSemanticMarkers(markdownContent, contract);
+          if (!result.valid) {
+            out(`${JSON.stringify({ ok: false, errors: result.errors.map(e => ({ code: 'MARKER_VALIDATION_FAILED', path: '/', message: e })) }, null, 2)}\n`);
+            return 1;
+          }
+          out(`${JSON.stringify({ ok: true, data: { valid: true, issues: [] } }, null, 2)}\n`);
+          return 0;
+        }
+
+        out(`${JSON.stringify({ ok: false, error: { code: 'INVALID_COMMAND', path: '/command', message: 'Usage: artifact-graph contract list|explain|validate|normalize|check-policy|validate-markers [options]' } }, null, 2)}\n`);
+        return 1;
+      }
       default:
         err(helpText());
         return 1;
     }
   } catch (error) {
+    if (parsed.command === 'contract') {
+      const contractError = error as Partial<ContractError> & Error;
+      out(`${JSON.stringify({ ok: false, error: {
+        code: contractError.code ?? 'CONTRACT_INTERNAL_ERROR',
+        path: '/contract',
+        message: contractError.message,
+        ...(contractError.details ? { details: contractError.details } : {}),
+      } }, null, 2)}\n`);
+      return 1;
+    }
     err(`${(error as Error).message}\n`);
     return 1;
   }
@@ -1133,6 +1384,12 @@ Commands:
   doctor [--format json|markdown]
   validate-review-result --file <path> [--format json]
   generate-e2e-registry [--deterministic] [--out <path>] [--check]
+  contract list [--contracts-dir <path>] [--format json]
+  contract explain --contract <major-id> [--contracts-dir <path>] [--format json]
+  contract validate --contract <major-id> --data <json> [--contracts-dir <path>] [--format json]
+  contract normalize --contract <major-id> --data <json> [--format json]
+  contract check-policy --contract <major-id> --policy <json> [--contracts-dir <path>] [--format json]
+  contract validate-markers --contract <major-id> --markdown <path> [--contracts-dir <path>] [--format json]
 `;
 }
 

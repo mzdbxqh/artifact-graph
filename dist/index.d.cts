@@ -793,6 +793,337 @@ interface ReviewResult {
     repair?: RepairData;
 }
 
+interface ContractIdentity {
+    /** Major identity (e.g., "artifact.e2e-test@1") */
+    major: string;
+    /** Authority namespace (e.g., "artifact", "project", "io.github.org") */
+    authority: string;
+    /** Namespace for ID resolution */
+    namespace: string;
+    /** Immutable revision digest (sha256:...) */
+    revisionDigest: string;
+    /** Machine-readable relation rules for this contract */
+    relationRules?: Record<string, RelationRule>;
+    /** Machine-readable semantic markers for this contract */
+    semanticMarkers?: Record<string, SemanticMarker>;
+}
+interface RelationRule {
+    /** Allowed target types for this relation kind */
+    allowedTargetTypes: string[];
+    /** Minimum cardinality (0 = optional) */
+    min: number;
+    /** Maximum cardinality */
+    max: number;
+    /** Anchor policy: "required", "optional", or "forbidden" */
+    anchorPolicy: 'required' | 'optional' | 'forbidden';
+}
+interface SemanticMarker {
+    /** Canonical JSON pointer to the semantic slot */
+    jsonPointer: string;
+    /** Markdown marker identifier (e.g., "scope", "system-boundary") */
+    markdownMarker: string;
+    /** Whether this marker is required */
+    required: boolean;
+}
+interface ContractDefinition {
+    identity: ContractIdentity;
+    schema: ContractSchema;
+    /** Raw schema content for digest computation */
+    rawContent: string;
+}
+interface ContractSchema {
+    $id: string;
+    title: string;
+    version: string;
+    contractIdentity: ContractIdentity;
+    type: string;
+    required: string[];
+    properties: Record<string, unknown>;
+    definitions?: Record<string, unknown>;
+    additionalProperties?: boolean;
+}
+declare const CONTRACT_ERROR_CODES: {
+    /** Contract identity not found */
+    readonly CONTRACT_NOT_FOUND: "CONTRACT_NOT_FOUND";
+    /** Invalid contract identity format */
+    readonly INVALID_IDENTITY: "INVALID_IDENTITY";
+    /** Revision digest mismatch */
+    readonly DIGEST_MISMATCH: "DIGEST_MISMATCH";
+    /** Duplicate contract identity */
+    readonly DUPLICATE_IDENTITY: "DUPLICATE_IDENTITY";
+    /** Multiple active write contracts for same type */
+    readonly MULTIPLE_ACTIVE_WRITE: "MULTIPLE_ACTIVE_WRITE";
+    /** Unknown authority namespace */
+    readonly UNKNOWN_AUTHORITY: "UNKNOWN_AUTHORITY";
+    /** Namespace authority violation */
+    readonly AUTHORITY_VIOLATION: "AUTHORITY_VIOLATION";
+    /** Schema validation failed */
+    readonly SCHEMA_VALIDATION_FAILED: "SCHEMA_VALIDATION_FAILED";
+    /** Canonical IR normalization failed */
+    readonly NORMALIZATION_FAILED: "NORMALIZATION_FAILED";
+    /** Policy compatibility check failed */
+    readonly POLICY_INCOMPATIBLE: "POLICY_INCOMPATIBLE";
+    /** Legacy revision cannot be normalized */
+    readonly LEGACY_NORMALIZATION_FAILED: "LEGACY_NORMALIZATION_FAILED";
+    /** Canonical and legacy conflict */
+    readonly CANONICAL_LEGACY_CONFLICT: "CANONICAL_LEGACY_CONFLICT";
+    /** Relation rule violation */
+    readonly RELATION_RULE_VIOLATION: "RELATION_RULE_VIOLATION";
+    /** Relation rules missing in contract (fail closed) */
+    readonly RELATION_RULES_MISSING: "RELATION_RULES_MISSING";
+    /** Ambiguous revision — multiple revisions found, no unique active write */
+    readonly AMBIGUOUS_REVISION: "AMBIGUOUS_REVISION";
+    /** Invalid relation kind */
+    readonly RELATION_INVALID_KIND: "RELATION_INVALID_KIND";
+    /** Invalid relation target type */
+    readonly RELATION_INVALID_TARGET_TYPE: "RELATION_INVALID_TARGET_TYPE";
+    /** Relation below minimum cardinality */
+    readonly RELATION_BELOW_MIN: "RELATION_BELOW_MIN";
+    /** Relation above maximum cardinality */
+    readonly RELATION_ABOVE_MAX: "RELATION_ABOVE_MAX";
+    /** Missing required anchor */
+    readonly RELATION_MISSING_ANCHOR: "RELATION_MISSING_ANCHOR";
+    /** Forbidden anchor present */
+    readonly RELATION_FORBIDDEN_ANCHOR: "RELATION_FORBIDDEN_ANCHOR";
+    /** Missing required semantic marker */
+    readonly MARKER_MISSING: "MARKER_MISSING";
+    /** Duplicate semantic marker */
+    readonly MARKER_DUPLICATE: "MARKER_DUPLICATE";
+    /** Unknown semantic marker */
+    readonly MARKER_UNKNOWN: "MARKER_UNKNOWN";
+};
+type ContractErrorCode = typeof CONTRACT_ERROR_CODES[keyof typeof CONTRACT_ERROR_CODES];
+declare class ContractError extends Error {
+    readonly code: ContractErrorCode;
+    readonly details?: Record<string, unknown> | undefined;
+    constructor(code: ContractErrorCode, message: string, details?: Record<string, unknown> | undefined);
+}
+/**
+ * Check if a namespace is official (artifact or artifact.*)
+ */
+declare function isOfficialNamespace(namespace: string): boolean;
+/**
+ * Validate namespace authority
+ * - Official namespace (artifact.*) can only be used by official contracts
+ * - Third-party must use their own authority (e.g., io.github.org.*)
+ * - Project contracts use project.<project-id>.*
+ */
+declare function validateNamespaceAuthority(identity: ContractIdentity, expectedAuthority?: string): void;
+/**
+ * Compute immutable revision digest for contract content.
+ * Uses SHA-256 on canonicalized content (revisionDigest field excluded).
+ */
+declare function computeRevisionDigest(content: string): string;
+/**
+ * Verify that content matches expected digest
+ */
+declare function verifyDigest(content: string, expectedDigest: string): boolean;
+interface ContractRegistryEntry {
+    contract: ContractDefinition;
+    isActive: boolean;
+    isWriteTarget: boolean;
+    loadedAt: string;
+}
+declare class ContractRegistry {
+    private contracts;
+    private typeToActiveWrite;
+    private majorToContracts;
+    /**
+     * Register a contract
+     * @throws ContractError if duplicate identity or multiple active write contracts
+     */
+    register(contract: ContractDefinition, options?: {
+        isActive?: boolean;
+        isWriteTarget?: boolean;
+    }): void;
+    /**
+     * Resolve by major identity. Multiple revisions require a unique active write
+     * revision; insertion order is never a resolution policy.
+     */
+    get(major: string): ContractDefinition | undefined;
+    /**
+     * Get contract by major identity and digest
+     */
+    getByMajorAndDigest(major: string, digest: string): ContractDefinition | undefined;
+    /**
+     * Get all contracts for a major identity
+     */
+    getByMajor(major: string): ContractDefinition[];
+    /**
+     * Get active write contract for a type
+     */
+    getActiveWriteContract(typePrefix: string): ContractDefinition | undefined;
+    /**
+     * List all registered contracts
+     */
+    list(): ContractRegistryEntry[];
+    /**
+     * Check if a contract is registered by major identity
+     */
+    has(major: string): boolean;
+    /**
+     * Check if a contract is registered by major identity and digest
+     */
+    hasByMajorAndDigest(major: string, digest: string): boolean;
+}
+interface CanonicalIR {
+    /** Artifact type */
+    type: string;
+    /** Artifact ID */
+    id: string;
+    /** Contract major identity used */
+    contractMajor: string;
+    /** Contract revision digest */
+    contractDigest: string;
+    /** Normalized canonical data */
+    canonical: Record<string, unknown>;
+    /** Source revision (legacy or canonical) */
+    sourceRevision: 'canonical' | 'legacy';
+    /** Normalization warnings */
+    warnings: string[];
+}
+interface NormalizationError {
+    code: string;
+    path: string;
+    message: string;
+}
+interface NormalizationResult {
+    success: boolean;
+    ir?: CanonicalIR;
+    errors: NormalizationError[];
+    warnings: string[];
+}
+interface LegacyFieldMapping {
+    /** Legacy field name */
+    legacy: string;
+    /** Canonical field name */
+    canonical: string;
+    /** Transform function (optional) */
+    transform?: (value: unknown) => unknown;
+    /** Whether field is required in canonical */
+    required?: boolean;
+}
+interface NormalizerConfig {
+    /** Contract identity this normalizer targets */
+    contractMajor: string;
+    /** Field mappings from legacy to canonical */
+    fieldMappings: LegacyFieldMapping[];
+    /** Validation function for canonical form */
+    validate?: (canonical: Record<string, unknown>) => string[];
+}
+/**
+ * Normalize data to canonical IR.
+ * Handles:
+ * - Pure canonical input: returns sourceRevision: 'canonical'
+ * - Pure legacy input: maps to canonical, returns sourceRevision: 'legacy'
+ * - Mixed input: detects canonical/legacy conflicts
+ */
+declare function normalizeToCanonical(legacyData: Record<string, unknown>, config: NormalizerConfig, contract: ContractDefinition): NormalizationResult;
+interface ProjectPolicy {
+    /** Policy identity */
+    id: string;
+    /** Base contract this policy tightens */
+    baseContractMajor: string;
+    /** Additional required fields */
+    additionalRequired?: string[];
+    /** Restricted enum values (subset of base) */
+    restrictedEnums?: Record<string, unknown[]>;
+    /** Minimum cardinality overrides */
+    minCardinality?: Record<string, number>;
+    /** Maximum cardinality overrides */
+    maxCardinality?: Record<string, number>;
+    /** Additional constraints */
+    constraints?: Record<string, unknown>;
+}
+interface PolicyCompatibilityResult {
+    compatible: boolean;
+    errors: string[];
+    warnings: string[];
+}
+/**
+ * Validate that project policy only tightens (never loosens) base contract.
+ * - Arrays use minItems/maxItems; numbers use minimum/maximum.
+ * - Enum restrictions must be subsets of base enum.
+ * - Unimplemented constraints are rejected (fail-closed).
+ */
+declare function validatePolicyCompatibility(policy: ProjectPolicy, baseContract: ContractDefinition): PolicyCompatibilityResult;
+interface LoadContractOptions {
+    /** Expected authority (optional, for validation) */
+    expectedAuthority?: string;
+}
+/**
+ * Load contract from JSON file.
+ * Digest verification is always on (fail-closed) — no bypass option.
+ */
+declare function loadContract(contractPath: string, options?: LoadContractOptions): Promise<ContractDefinition>;
+/**
+ * Load all contracts from a directory.
+ * Fails closed: if ANY contract is invalid, the entire load fails.
+ */
+declare function loadContractsFromDirectory(contractsDir: string, options?: LoadContractOptions): Promise<ContractDefinition[]>;
+interface SchemaValidationResult {
+    valid: boolean;
+    errors: string[];
+}
+/**
+ * Validate data against a contract schema using AJV.
+ * AJV is a runtime dependency — if unavailable, validation fails closed.
+ */
+declare function validateContractAgainstSchema(data: unknown, contract: ContractDefinition): SchemaValidationResult;
+declare const E2E_NORMALIZER_CONFIG: NormalizerConfig;
+/**
+ * Normalize a legacy E2E artifact to canonical IR.
+ * The legacy format has flat fields (id, title, status, scope as string, etc.)
+ * while the canonical format uses nested objects (metadata.id, scope.business_goal, etc.)
+ * Requires explicit contract — no default identity fallback.
+ */
+declare function normalizeE2eLegacyArtifact(legacyData: Record<string, unknown>, contract: ContractDefinition): NormalizationResult;
+interface ContractCatalogEntry {
+    identity: ContractIdentity;
+    contract: ContractDefinition;
+}
+/**
+ * Machine-readable contract catalog.
+ * Lists, resolves and explains registered contracts.
+ * Uses (major, digest) as revision key for multi-revision support.
+ */
+declare class ContractCatalog {
+    private contracts;
+    private majorToContracts;
+    private majorToActiveWrite;
+    /**
+     * Add a contract to the catalog
+     * @throws ContractError if duplicate identity
+     */
+    add(contract: ContractDefinition, options?: {
+        isActive?: boolean;
+        isWriteTarget?: boolean;
+    }): void;
+    /**
+     * Resolve a contract by major identity.
+     * - 0 entries: returns undefined
+     * - 1 entry: returns it
+     * - multiple: if there's a unique active write, returns it; otherwise throws AMBIGUOUS_REVISION
+     */
+    resolve(major: string): ContractDefinition | undefined;
+    /**
+     * Resolve a contract by major identity and exact digest
+     */
+    resolveByDigest(major: string, digest: string): ContractDefinition | undefined;
+    /**
+     * List all catalog entries (all revisions)
+     */
+    list(): ContractCatalogEntry[];
+    /**
+     * Get catalog as JSON-serializable object (all revisions)
+     */
+    toJSON(): Record<string, unknown>;
+}
+/**
+ * Load contract catalog from a contracts directory
+ */
+declare function loadContractCatalog(contractsDir: string, options?: LoadContractOptions): Promise<ContractCatalog>;
+
 interface ArtifactNode {
     uid: string;
     type: string;
@@ -1105,4 +1436,4 @@ declare function discoverTargets(graph: ArtifactGraph, options?: DiscoverOptions
 declare function resolveArtifactContext(graph: ArtifactGraph, opts: ContextOptions): ContextManifest;
 declare function formatContextMarkdown(manifest: ContextManifest): string;
 
-export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type BatchDefinition, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, type E2eCoverageStats, type E2eCoverageThresholds, type E2eRegistry, type E2eRegistryBatch, type E2eRunnerConfig, type E2eWaiver, type Evidence, type EvidenceObject, type ExecutorType, type Finding, type FindingLocation, type FindingSeverity, type FindingStatus, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PreparedManagedHookBlock, type Producer, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type RepairData, type RepairValidation, type ResolveArtifactGraphCliOptions, type ReviewData, type ReviewDecision, type ReviewMetrics, type ReviewOrderStep, type ReviewResult, type ReviewStatus, type RiskChecklistItem, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationError, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, computeE2eCoverageStats, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, generateE2eRegistry, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, nextId, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateExecutableTraceability, validateGraph, validatePacket, validatePacketMarkdown, validatePacketPrompt, validateReviewResult, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, writeGraphCache };
+export { ALWAYS_PRESENT_ITEMS as ALWAYS_PRESENT, type ArtifactChainDoctorReport, type ArtifactEdge, type ArtifactEdgeRule, type ArtifactExtraFieldSchema, type ArtifactGraph, type ArtifactGraphCliCandidate, type ArtifactGraphCliResolution, type ArtifactGraphCliSource, type ArtifactNode, type ArtifactSchema, type ArtifactTarget, type ArtifactTypeMetadata, type ArtifactTypeRole, type ArtifactTypeSchema, BASELINE_CONSTRAINTS, BASELINE_CONSTRAINTS_COUNT, BASELINE_ITEMS_COUNT, type BatchDefinition, CONTRACT_ERROR_CODES, type CanonicalIR, type CollectChangedPathsOptions, type ContextItem, type ContextManifest, type ContextMode, type ContextOptions, type ContextTier, ContractCatalog, type ContractCatalogEntry, type ContractDefinition, ContractError, type ContractErrorCode, type ContractIdentity, ContractRegistry, type ContractRegistryEntry, type ContractSchema, DEFAULT_MAX_CHARS, DEFAULT_SCHEMA, type DiscoverOptions, E2E_NORMALIZER_CONFIG, type E2eCoverageStats, type E2eCoverageThresholds, type E2eRegistry, type E2eRegistryBatch, type E2eRunnerConfig, type E2eWaiver, type Evidence, type EvidenceObject, type ExecutorType, type Finding, type FindingLocation, type FindingSeverity, type FindingStatus, type GitChangeMode, type GitChangeResult, type GitHookName, type HookInstallResult, type ImplementationBlueprintDraft, type ImplementationPacket, type LegacyFieldMapping, type LoadContractOptions, MIN_PROMPT_CHARS, type ManagedHookBlockOptions, type MissingDetail, type NormalizationResult, type NormalizerConfig, type PacketAuditEntry, type PacketAuditSummary, type PacketCategory, type PacketItem, type PacketOmittedItem, type PacketOptions, type PacketPromptError, type PacketPromptOptions, type PacketTarget, type PacketTargetType, type PacketValidationIssue, type PacketValidationResult, type PolicyCompatibilityResult, type PreparedManagedHookBlock, type Producer, type ProjectPolicy, type PromptValidationIssue, type PromptValidationResult, type QueryOptions, type RepairData, type RepairValidation, type ResolveArtifactGraphCliOptions, type ReviewData, type ReviewDecision, type ReviewMetrics, type ReviewOrderStep, type ReviewResult, type ReviewStatus, type RiskChecklistItem, type SchemaValidationResult, TARGET_ARTIFACT_TYPES, type TargetArtifactType, type TraceVersionResult, VALID_PACKET_TARGET_TYPES, VERSION_INDEX_SCHEMA_VERSION, VERSION_LOCK_PATH, VERSION_LOCK_SCHEMA_VERSION, type ValidationError, type ValidationIssue, type VersionEdgeKind, type VersionIndex, type VersionLockAuditResult, type VersionLockBootstrapOptions, type VersionLockEntry, type VersionLockFile, type VersionLockIssue, type VersionLockRef, type VersionLockRefreshOptions, type VersionLockRefreshResult, type VersionLockSourceRef, type VersionLockStatus, type VersionLockUpdateOptions, type VersionSourceKind, type VersionedEdge, type VersionedNode, applyPreparedManagedHookBlocks, assemblePacket, auditPackets, auditVersionLock, bootstrapVersionLock, buildGraph, buildVersionIndex, collectChangedPaths, computeE2eCoverageStats, computeRevisionDigest, discoverAndAuditPackets, discoverTargets, doctorArtifactChain, formatContextMarkdown, generateE2eRegistry, getArtifactTypeMetadata, getTargetArtifactTypes, installManagedHookBlock, isOfficialNamespace, isPacketTargetType, isPacketTargetTypeDynamic, isTargetArtifactType, loadConfig, loadContract, loadContractCatalog, loadContractsFromDirectory, nextId, normalizeE2eLegacyArtifact, normalizeToCanonical, parseTargetSelector, parseTargetsFile, prepareManagedHookBlock, queryGraph, refreshVersionLock, renderDoctorMarkdown, renderMermaid, renderPacketMarkdown, renderPacketPrompt, renderTraceVersionMarkdown, renderVersionLockAuditMarkdown, renderVersionLockRefreshMarkdown, resolveArtifactContext, resolveArtifactGraphCli, resolveArtifactTypeName, resolveCliTarget, resolveGitHookPath, resolveMatrixEdges, scanArtifacts, traceVersion, updateVersionLock, validateContractAgainstSchema, validateExecutableTraceability, validateGraph, validateNamespaceAuthority, validatePacket, validatePacketMarkdown, validatePacketPrompt, validatePolicyCompatibility, validateReviewResult, validateScenarioPrdLinkIndex, validateScenarioPrdLinks, verifyDigest, writeGraphCache };

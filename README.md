@@ -17,7 +17,7 @@ pnpm add -D artifact-graph
 Or install from GitHub:
 
 ```bash
-npm install --save-dev github:mzdbxqh/artifact-graph
+npm install --save-dev github:ifoohoo/artifact-graph
 ```
 
 Node.js `>=22.0.0` is required. For pnpm 10+, see [INSTALL.md](INSTALL.md) for the native build
@@ -65,7 +65,7 @@ cross-object field values, so callers must also run the semantic validator; stab
 
 ## Related Project
 
-Use [`artifact-chain-assistant`](https://github.com/mzdbxqh/artifact-chain-assistant) for Codex and
+Use [`artifact-chain-assistant`](https://github.com/ifoohoo/artifact-chain-assistant) for Codex and
 Claude Code skills that guide artifact-chain intake, setup, and maintenance.
 
 ## License
